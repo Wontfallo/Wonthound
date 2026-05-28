@@ -14,7 +14,7 @@
 
 This is a **simple addition that delivers the largest impact**. Built from the cheapest parts on Amazon, delivered in 2 days:
 
-- 💰 The **CYD is $15** — how often does anyone actually use the other RF modules? Not me.
+- 💰 The **2.4 GHz $3 bucks NO EXTRA CAP NEEDED! Why? Because this is the correct way. ** — how often does anyone actually use the other RF modules? Not me.
 - ⚡ All I wanted was simple: **access to the pin** to use the exposed SPI port for the 2.4GHz module.
 - 🧼 Look at this **clean build**.
 - 🔍 Also, I was sick of needing reading glasses to see the tiny font on the screen.
@@ -39,7 +39,7 @@ This project contains firmware and resources for an ESP32-based display and wire
 | # | Resource | Description | Link |
 |---|----------|-------------|------|
 | 📄 | **ESP32-32E Display Schematic** | 2.8" CYD pinout & wiring reference | [Download PDF](https://github.com/Wontfallo/Wonthound/blob/main/2.8inch_ESP32-32E_Display_Schematic.pdf) |
-| 🛒 | **2.8" CYD Display** | $15 — to your doorstep in 2 days | [Buy on Amazon](https://www.amazon.com/dp/B0D92C9MMH) |
+| 🛒 | **2.8" CYD Display ESP32-E SPI exposed** | $15 — to your doorstep in 2 days | [Buy on Amazon](https://www.amazon.com/dp/B0D92C9MMH) |
 | 📄 | **E01-ML01DP5 User Manual** | nRF24 2.4GHz module documentation | [Download PDF](https://github.com/Wontfallo/Wonthound/blob/main/E01-ML01DP5_Usermanual_EN_V1.7.pdf) |
 | 🛒 | **E01-ML01DP5 Module** | $3 — to your doorstep in 2 days | [Buy on Amazon](https://www.amazon.com/EBYTE-Wireless-E01C-2G4M27SX-Antenna-nRF24L01/dp/B0BV9CC8LW) |
 | 💾 | **Firmware Binary** | `WontHound-Freenove-E32R28T-P3-NRF24-FULL.bin` | [Download BIN](https://github.com/Wontfallo/Wonthound/blob/main/WontHound-Freenove-E32R28T-P3-NRF24-FULL.bin) |
@@ -66,16 +66,16 @@ The firmware can be flashed onto the target device using any standard ESP32 uplo
 ## 🚦 Getting Started
 
 ### 1️⃣ Review the Hardware Schematics
-Grab the [**2.8" ESP32-32E Display Schematic (PDF)**](https://github.com/Wontfallo/Wonthound/blob/main/2.8inch_ESP32-32E_Display_Schematic.pdf) and study the pinout.
+Grab the schematic from the table above and study the pinout.
 
 ### 2️⃣ Consult the Module Documentation
-Read the [**E01-ML01DP5 User Manual (PDF)**](https://github.com/Wontfallo/Wonthound/blob/main/E01-ML01DP5_Usermanual_EN_V1.7.pdf) to understand the radio module.
+Read the E01-ML01DP5 user manual to understand the radio module.
 
 ### 3️⃣ Solder the Botch Wire
 One wire. That's it. See the photo above. 🔧
 
 ### 4️⃣ Flash the Firmware
-Download the [**binary**](https://github.com/Wontfallo/Wonthound/blob/main/WontHound-Freenove-E32R28T-P3-NRF24-FULL.bin), then flash:
+Grab the binary from the table above, then flash:
 
 ```bash
 esptool.py --chip esp32 --port /dev/ttyUSB0 --baud 921600 write_flash 0x0 WontHound-Freenove-E32R28T-P3-NRF24-FULL.bin
