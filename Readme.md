@@ -12,8 +12,6 @@ This project contains firmware and resources for an ESP32-based display and wire
 
 **Main Board and System:**
 
-![$15 bucks to your doorstep in 2 days AMAZON](https://www.amazon.com/dp/B0D92C9MMH?sp_csd=d2lkZ2V0TmFtZT1zcF92c2VfUlZQX2RldGFpbA)
-
 ![Main Board - Large Photo](https://github.com/Wontfallo/Wonthound/blob/main/586819740-e195ca04-e444-4971-b953-b4f7f04b68ee.png)
 
 **ESP32 Display Module:**
@@ -49,15 +47,11 @@ The firmware can be installed onto the target device using standard ESP32 upload
 
 ## Getting Started
 
-1. **Review hardware schematics** to familiarize yourself with the connections  
-   [2.8" ESP32-32E Display Schematic (PDF)](https://github.com/Wontfallo/Wonthound/blob/main/2.8inch_ESP32-32E_Display_Schematic.pdf)
-
-2. **Consult module documentation**  
-   [E01-ML01DP5 User Manual (PDF)](https://github.com/Wontfallo/Wonthound/blob/main/E01-ML01DP5_Usermanual_EN_V1.7.pdf)
-
-3. **Flash the firmware**  
-   Download the binary: [WontHound-Freenove-E32R28T-P3-NRF24-FULL.bin](https://github.com/Wontfallo/Wonthound/blob/main/WontHound-Freenove-E32R28T-P3-NRF24-FULL.bin)  
-   Use your favorite ESP32 tool to upload.
+| Step | Description / Link |
+|------|--------------------|
+| 1 | **Review hardware schematics**<br>[2.8" ESP32-32E Display Schematic (PDF)](https://github.com/Wontfallo/Wonthound/blob/main/2.8inch_ESP32-32E_Display_Schematic.pdf) |
+| 2 | **Consult module documentation**<br>[E01-ML01DP5 User Manual (PDF)](https://github.com/Wontfallo/Wonthound/blob/main/E01-ML01DP5_Usermanual_EN_V1.7.pdf) |
+| 3 | **Flash the firmware**<br>Download: [WontHound-Freenove-E32R28T-P3-NRF24-FULL.bin](https://github.com/Wontfallo/Wonthound/blob/main/WontHound-Freenove-E32R28T-P3-NRF24-FULL.bin)<br>Use your favorite ESP32 tool to upload. |
 
 ---
 
