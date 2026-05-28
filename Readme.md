@@ -99,13 +99,14 @@ esptool.py --chip esp32 --port /dev/ttyUSB0 --baud 921600 write_flash 0x0 WontHo
 ## 📜 License
 
 This repository is provided **without an explicit open-source license**. Please contact the repository owner with questions regarding usage or redistribution.
+Who are you kidding?  I've spent 15 years bit banging low level hardware long before the ESP32 even exsisted PIC32. I vibe coded in 5 minutes! 
 
 ---
 
 ## 🙌 Contributing
 
 Got improvements? Build steps? Better docs? **PRs welcome.**
-Feel free to fork, hack, and make it your own.
+Feel free to fork, it from hack, and smash it to your liking like I did and make it your own!
 
 ---
 
