@@ -4,6 +4,7 @@
 
 [![Platform](https://img.shields.io/badge/platform-ESP32-blue.svg)](https://www.espressif.com/)
 [![Display](https://img.shields.io/badge/display-2.8%22%20CYD-orange.svg)](https://github.com/Wontfallo/Wonthound)
+[![ESP32-S3 Touch](https://img.shields.io/badge/ESP32--S3-Capacitive%20Touch%20Screen-blueviolet?style=for-the-badge&logo=espressif&logoColor=white)](https://www.amazon.com/Capacitive-Supporting-XiaoZhiAI-Dual-core-Microcontroller/dp/B0FSQF6FKN)
 [![Radio](https://img.shields.io/badge/radio-nRF24L01-green.svg)](https://github.com/Wontfallo/Wonthound)
 [![Status](https://img.shields.io/badge/status-plug%20%26%20play-brightgreen.svg)](https://github.com/Wontfallo/Wonthound)
 [![Solder](https://img.shields.io/badge/solder-1%20botch%20wire-red.svg)](https://github.com/Wontfallo/Wonthound)
@@ -14,10 +15,14 @@
 
 This is a **simple addition that delivers the largest impact**. Built from the cheapest parts on Amazon, delivered in 2 days:
 
-- The **2.4 GHz $3 bucks NO EXTRA CAP NEEDED! Why? Because this is the correct way. ** — how often does anyone actually use the other RF modules? Not me.
+- The **2.4 GHz $3 bucks NO EXTRA CAP NEEDED! Why? Because this is the correct way.** — how often does anyone actually use the other RF modules? Not me.
 - All I wanted was simple: **access to the pin** to use the exposed SPI port for the 2.4GHz module.
 - Also, I was sick of needing reading glasses to see the tiny font on the screen 🔎.
 - And can we **💀💀calm down on the thousands of skulls?💀💀**
+
+  ### NEW   [ESP32-S3 support added](https://www.amazon.com/dp/B0FSQLPQ6M/?ref_=cm_wl_huc_item)
+  **I also added a build for the S3 capacitive touch screen with voice commmands.**
+
 
 This project contains firmware and resources for an ESP32-based display and wireless module system. **Solder one botch wire** as seen in the photo — then it's plug and play.
 
