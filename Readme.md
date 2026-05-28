@@ -1,64 +1,119 @@
-# Wonthound
+# 🐺 Wonthound
 
-**Wonthound** my take Halehound? I wont hound you anymore for a simple 5 line pine reassignment on a closed source project largely build off an open source project. Thanks for the source code. 
-This is simple addition that applies the largest impact. These are the cheapest parts from Amazon that get to your door in 2 day. The CYD is 15$ How often does anyone need or use the other RF modules. Not me. All I wanted was simple. Give me access to the pin to use the exposed SPI port for the 2.4GHz module. Look at this clean build. 
+> **My take on Halehound** — I won't hound you anymore for a simple 5-line pin reassignment on a closed-source project largely built off an open-source project. Thanks for the source code. 🙏
 
-Also I was sick of needing classes to read the tiny font on the screen. Also can we calm down on the thousands of skulls? 💀
-This project contains firmware and resources for an ESP32-based display and wireless module system. Simple solder one botch wire as seen in the photo and then it's plug and play. 
+[![Platform](https://img.shields.io/badge/platform-ESP32-blue.svg)](https://www.espressif.com/)
+[![Display](https://img.shields.io/badge/display-2.8%22%20CYD-orange.svg)](https://github.com/Wontfallo/Wonthound)
+[![Radio](https://img.shields.io/badge/radio-nRF24L01-green.svg)](https://github.com/Wontfallo/Wonthound)
+[![Status](https://img.shields.io/badge/status-plug%20%26%20play-brightgreen.svg)](https://github.com/Wontfallo/Wonthound)
+[![Solder](https://img.shields.io/badge/solder-1%20botch%20wire-red.svg)](https://github.com/Wontfallo/Wonthound)
 
 ---
 
-## Hardware Overview
+## 🔥 Why Wonthound?
 
-**Main Board and System:**
+This is a **simple addition that delivers the largest impact**. Built from the cheapest parts on Amazon, delivered in 2 days:
 
-![Main Board - Large Photo](https://github.com/Wontfallo/Wonthound/blob/main/586819740-e195ca04-e444-4971-b953-b4f7f04b68ee.png)
+- 💰 The **CYD is $15** — how often does anyone actually use the other RF modules? Not me.
+- ⚡ All I wanted was simple: **access to the pin** to use the exposed SPI port for the 2.4GHz module.
+- 🧼 Look at this **clean build**.
+- 🔍 Also, I was sick of needing reading glasses to see the tiny font on the screen.
+- 💀 And can we **calm down on the thousands of skulls?**
 
-**ESP32 Display Module:**
+This project contains firmware and resources for an ESP32-based display and wireless module system. **Solder one botch wire** as seen in the photo — then it's plug and play.
 
+---
+
+## 🛠️ Hardware Overview
+
+### Main Board & System
+![Main Board](https://github.com/Wontfallo/Wonthound/blob/main/586819740-e195ca04-e444-4971-b953-b4f7f04b68ee.png)
+
+### ESP32 Display Module
 ![ESP32 Display](https://github.com/Wontfallo/Wonthound/blob/main/ESP32%20Display.png)
 
 ---
 
-## Key Documentation & Downloads
+## 📚 Key Documentation, Downloads & Parts
 
-- ▶️ **[2.8" ESP32-32E Display Schematic (PDF)](https://github.com/Wontfallo/Wonthound/blob/main/2.8inch_ESP32-32E_Display_Schematic.pdf)**
-- [$15 bucks to your doorstep in 2 days AMAZON](https://www.amazon.com/dp/B0D92C9MMH?sp_csd=d2lkZ2V0TmFtZT1zcF92c2VfUlZQX2RldGFpbA)
-- ▶️ **[E01-ML01DP5 Module User Manual (PDF)](https://github.com/Wontfallo/Wonthound/blob/main/E01-ML01DP5_Usermanual_EN_V1.7.pdf)**
-- [$3 bucks to your doorstep in 2 days AMAZON](https://www.amazon.com/EBYTE-Wireless-E01C-2G4M27SX-Antenna-nRF24L01/dp/B0BV9CC8LW/ref=sr_1_37?rid=ABDZOQ054TTL&dib=eyJ2IjoiMSJ9.26MGA9uR3lPdQrhsTqEeQPazC85xo0q9kLzU_a5qkr4HMHVSxZn1ncQkRa36IaezVdrRUwEGR5y5qD8NFWA9AHDHNVFa7wDHgXMUGAQG23DKXE9gPE89AcmKk0-ern4HGntmOzBjBgW1NHrmWyJMjd8v6iTn7H5XyLRPMHQIfZhRAZczCUcMxlK7lnZvpS6ys7Xt9ehWa29-7fdMECJihZvspEF0prwyvPZv-uSrnwuB8I4pxqB1GQtyiIVhk-f69TRA_3JvPorSXiloJ419QMM_U5wVFXrEeU4rbMqCISY.g7fxEp5c6Fe5V6iU4XbFRDnuiatDISWWk2uvDSEv980&dib_tag=se&keywords=2.4+ghz+module&qid=1779931085&s=electronics&sprefix=2.4+ghz+module+%2Celectronics%2C162&xpid=ycpEPPumBLBg4)
-- 💾 **[Firmware Binary - WontHound-Freenove-E32R28T-P3-NRF24-FULL.bin](https://github.com/Wontfallo/Wonthound/blob/main/WontHound-Freenove-E32R28T-P3-NRF24-FULL.bin)**
+| # | Resource | Description | Link |
+|---|----------|-------------|------|
+| 📄 | **ESP32-32E Display Schematic** | 2.8" CYD pinout & wiring reference | [Download PDF](https://github.com/Wontfallo/Wonthound/blob/main/2.8inch_ESP32-32E_Display_Schematic.pdf) |
+| 🛒 | **2.8" CYD Display** | $15 — to your doorstep in 2 days | [Buy on Amazon](https://www.amazon.com/dp/B0D92C9MMH) |
+| 📄 | **E01-ML01DP5 User Manual** | nRF24 2.4GHz module documentation | [Download PDF](https://github.com/Wontfallo/Wonthound/blob/main/E01-ML01DP5_Usermanual_EN_V1.7.pdf) |
+| 🛒 | **E01-ML01DP5 Module** | $3 — to your doorstep in 2 days | [Buy on Amazon](https://www.amazon.com/EBYTE-Wireless-E01C-2G4M27SX-Antenna-nRF24L01/dp/B0BV9CC8LW) |
+| 💾 | **Firmware Binary** | `WontHound-Freenove-E32R28T-P3-NRF24-FULL.bin` | [Download BIN](https://github.com/Wontfallo/Wonthound/blob/main/WontHound-Freenove-E32R28T-P3-NRF24-FULL.bin) |
+
+> 💡 **Total build cost: ~$18 shipped.** That's cheaper than lunch.
 
 ---
 
-## Firmware Description
+## ⚙️ Firmware Description
 
 The provided firmware is designed for the custom ESP32-based hardware shown above. Its main functions include:
 
-- **Espressif ESP32 Bootloader & Application**
-  - Initializes the 2.8" display hardware (via SPI or parallel interface).
-  - Communicates with the nRF24-based E01-ML01DP5 wireless module for low-power 2.4GHz radio communication.
-  - Manages user interface display, button input, and low-power features.
-  - Handles device communication, configuration, and potential over-the-air (OTA) updates (if supported in firmware builds).
-  - Provides debugging and serial log output for development.
+### 🚀 Espressif ESP32 Bootloader & Application
+- 🖥️ Initializes the 2.8" display hardware (via SPI or parallel interface)
+- 📡 Communicates with the nRF24-based **E01-ML01DP5** wireless module for low-power 2.4GHz radio
+- 🎛️ Manages UI display, button input, and low-power features
+- 🔄 Handles device communication, configuration, and OTA updates (when supported)
+- 🐛 Provides debugging and serial log output for development
 
-The firmware can be installed onto the target device using standard ESP32 upload tools (esptool, Arduino, PlatformIO, etc.), with the provided binary file.
-
----
-
-## Getting Started
-
-| Step | Description / Link |
-|------|--------------------|
-| 1 | **Review hardware schematics**<br>[2.8" ESP32-32E Display Schematic (PDF)](https://github.com/Wontfallo/Wonthound/blob/main/2.8inch_ESP32-32E_Display_Schematic.pdf) |
-| 2 | **Consult module documentation**<br>[E01-ML01DP5 User Manual (PDF)](https://github.com/Wontfallo/Wonthound/blob/main/E01-ML01DP5_Usermanual_EN_V1.7.pdf) |
-| 3 | **Flash the firmware**<br>Download: [WontHound-Freenove-E32R28T-P3-NRF24-FULL.bin](https://github.com/Wontfallo/Wonthound/blob/main/WontHound-Freenove-E32R28T-P3-NRF24-FULL.bin)<br>Use your favorite ESP32 tool to upload. |
+The firmware can be flashed onto the target device using any standard ESP32 upload tool — `esptool`, Arduino IDE, PlatformIO, etc.
 
 ---
 
-## License
+## 🚦 Getting Started
 
-This repository is provided without an explicit open-source license. Please contact the repository owner with questions regarding usage or redistribution.
+### 1️⃣ Review the Hardware Schematics
+Grab the [**2.8" ESP32-32E Display Schematic (PDF)**](https://github.com/Wontfallo/Wonthound/blob/main/2.8inch_ESP32-32E_Display_Schematic.pdf) and study the pinout.
+
+### 2️⃣ Consult the Module Documentation
+Read the [**E01-ML01DP5 User Manual (PDF)**](https://github.com/Wontfallo/Wonthound/blob/main/E01-ML01DP5_Usermanual_EN_V1.7.pdf) to understand the radio module.
+
+### 3️⃣ Solder the Botch Wire
+One wire. That's it. See the photo above. 🔧
+
+### 4️⃣ Flash the Firmware
+Download the [**binary**](https://github.com/Wontfallo/Wonthound/blob/main/WontHound-Freenove-E32R28T-P3-NRF24-FULL.bin), then flash:
+
+```bash
+esptool.py --chip esp32 --port /dev/ttyUSB0 --baud 921600 write_flash 0x0 WontHound-Freenove-E32R28T-P3-NRF24-FULL.bin
+```
+
+### 5️⃣ Power it up and enjoy 🎉
 
 ---
 
-**Feel free to update this README with additional build steps or documentation as the project evolves!**
+## 🧰 Tech Stack
+
+| Component | Spec |
+|-----------|------|
+| 🧠 MCU | ESP32 (Freenove E32R28T-P3) |
+| 🖼️ Display | 2.8" CYD (Cheap Yellow Display) |
+| 📻 Radio | E01-ML01DP5 (nRF24L01+ based, 2.4GHz) |
+| 🔌 Interface | SPI |
+| ⚡ Power | USB 5V |
+
+---
+
+## 📜 License
+
+This repository is provided **without an explicit open-source license**. Please contact the repository owner with questions regarding usage or redistribution.
+
+---
+
+## 🙌 Contributing
+
+Got improvements? Build steps? Better docs? **PRs welcome.**
+Feel free to fork, hack, and make it your own.
+
+---
+
+<div align="center">
+
+**Built with ☕, frustration, and one botch wire.**
+
+⭐ *If this saved you from the skull spam, drop a star.* ⭐
+
+</div>
