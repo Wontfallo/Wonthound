@@ -10,15 +10,14 @@
 
 ---
 
-## 🔥 Why Wonthound?
+##  Why Wonthound?
 
 This is a **simple addition that delivers the largest impact**. Built from the cheapest parts on Amazon, delivered in 2 days:
 
-- 💰 The **2.4 GHz $3 bucks NO EXTRA CAP NEEDED! Why? Because this is the correct way. ** — how often does anyone actually use the other RF modules? Not me.
-- ⚡ All I wanted was simple: **access to the pin** to use the exposed SPI port for the 2.4GHz module.
-- 🧼 Look at this **clean build**.
-- 🔍 Also, I was sick of needing reading glasses to see the tiny font on the screen.
-- 💀 And can we **calm down on the thousands of skulls?**
+- The **2.4 GHz $3 bucks NO EXTRA CAP NEEDED! Why? Because this is the correct way. ** — how often does anyone actually use the other RF modules? Not me.
+- All I wanted was simple: **access to the pin** to use the exposed SPI port for the 2.4GHz module.
+- Also, I was sick of needing reading glasses to see the tiny font on the screen 🔎.
+- And can we **💀💀calm down on the thousands of skulls?💀💀**
 
 This project contains firmware and resources for an ESP32-based display and wireless module system. **Solder one botch wire** as seen in the photo — then it's plug and play.
 
