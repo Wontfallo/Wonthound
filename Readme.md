@@ -1,6 +1,6 @@
 # 🐺 Wonthound
 
-> **My take on Halehound** — I won't hound you anymore for a simple 5-line pin reassignment on a closed-source project largely built off an open-source project. Thanks for the source code. 🙏
+> **My take on Halehound** — I won't hound you anymore for a simple 5-line pin reassignment on a NOW closed-source codebase largely built off an open-source project. Thanks for the source code. 🙏
 
 [![Platform](https://img.shields.io/badge/platform-ESP32-blue.svg)](https://www.espressif.com/)
 [![Display](https://img.shields.io/badge/display-2.8%22%20CYD-orange.svg)](https://github.com/Wontfallo/Wonthound)
