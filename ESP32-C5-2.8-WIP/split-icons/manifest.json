@@ -1,0 +1,149 @@
+{
+  "source": "C:\\Users\\WontML\\Downloads\\Gemini_Generated_Image_f7scs8f7scs8f7sc.png",
+  "source_size": [
+    2707,
+    1202
+  ],
+  "tiles": [
+    {
+      "name": "01_wifi",
+      "file": "C:\\Users\\WontML\\Documents\\Codex\\2026-06-19\\you\\outputs\\split-icons\\01_wifi.png",
+      "box": [
+        0,
+        0,
+        471,
+        474
+      ],
+      "size": [
+        471,
+        474
+      ]
+    },
+    {
+      "name": "02_bluetooth",
+      "file": "C:\\Users\\WontML\\Documents\\Codex\\2026-06-19\\you\\outputs\\split-icons\\02_bluetooth.png",
+      "box": [
+        555,
+        0,
+        1030,
+        474
+      ],
+      "size": [
+        475,
+        474
+      ]
+    },
+    {
+      "name": "03_2_4ghz_satellite",
+      "file": "C:\\Users\\WontML\\Documents\\Codex\\2026-06-19\\you\\outputs\\split-icons\\03_2_4ghz_satellite.png",
+      "box": [
+        1115,
+        0,
+        1589,
+        474
+      ],
+      "size": [
+        474,
+        474
+      ]
+    },
+    {
+      "name": "04_433mhz_antenna",
+      "file": "C:\\Users\\WontML\\Documents\\Codex\\2026-06-19\\you\\outputs\\split-icons\\04_433mhz_antenna.png",
+      "box": [
+        1675,
+        0,
+        2148,
+        474
+      ],
+      "size": [
+        473,
+        474
+      ]
+    },
+    {
+      "name": "05_router_signal",
+      "file": "C:\\Users\\WontML\\Documents\\Codex\\2026-06-19\\you\\outputs\\split-icons\\05_router_signal.png",
+      "box": [
+        2233,
+        0,
+        2707,
+        474
+      ],
+      "size": [
+        474,
+        474
+      ]
+    },
+    {
+      "name": "06_radar_shield",
+      "file": "C:\\Users\\WontML\\Documents\\Codex\\2026-06-19\\you\\outputs\\split-icons\\06_radar_shield.png",
+      "box": [
+        0,
+        731,
+        471,
+        1202
+      ],
+      "size": [
+        471,
+        471
+      ]
+    },
+    {
+      "name": "07_sigint_chart",
+      "file": "C:\\Users\\WontML\\Documents\\Codex\\2026-06-19\\you\\outputs\\split-icons\\07_sigint_chart.png",
+      "box": [
+        555,
+        731,
+        1030,
+        1202
+      ],
+      "size": [
+        475,
+        471
+      ]
+    },
+    {
+      "name": "08_tools",
+      "file": "C:\\Users\\WontML\\Documents\\Codex\\2026-06-19\\you\\outputs\\split-icons\\08_tools.png",
+      "box": [
+        1115,
+        731,
+        1589,
+        1202
+      ],
+      "size": [
+        474,
+        471
+      ]
+    },
+    {
+      "name": "09_settings_gear",
+      "file": "C:\\Users\\WontML\\Documents\\Codex\\2026-06-19\\you\\outputs\\split-icons\\09_settings_gear.png",
+      "box": [
+        1675,
+        731,
+        2148,
+        1202
+      ],
+      "size": [
+        473,
+        471
+      ]
+    },
+    {
+      "name": "10_info",
+      "file": "C:\\Users\\WontML\\Documents\\Codex\\2026-06-19\\you\\outputs\\split-icons\\10_info.png",
+      "box": [
+        2233,
+        731,
+        2707,
+        1202
+      ],
+      "size": [
+        474,
+        471
+      ]
+    }
+  ]
+}
