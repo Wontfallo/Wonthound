@@ -1,0 +1,13 @@
+{
+  "name": "WontHound-CYD - NM-CYD-C5 (ESP32-C5)",
+  "version": "3.5.1",
+  "new_install_prompt_erase": false,
+  "builds": [
+    {
+      "chipFamily": "ESP32-C5",
+      "parts": [
+        { "path": "WontHound-C5-NM-CYD-v3.5.1-MERGED.bin", "offset": 0 }
+      ]
+    }
+  ]
+}

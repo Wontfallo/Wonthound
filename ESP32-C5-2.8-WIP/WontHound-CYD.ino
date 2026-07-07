@@ -39,6 +39,7 @@
 
 // Attack modules
 #include "wifi_attacks.h"
+#include "channel_radar.h"
 #include "bluetooth_attacks.h"
 #include "subghz_attacks.h"
 #include "nrf24_attacks.h"
@@ -128,8 +129,9 @@ const unsigned char *bitmap_icons[NUM_MENU_ITEMS] = {
 };
 
 // WiFi Submenu - 9 items
-const int NUM_SUBMENU_ITEMS = 9;
+const int NUM_SUBMENU_ITEMS = 10;
 const char *submenu_items[NUM_SUBMENU_ITEMS] = {
+    "WiFi Analyzer",
     "Packet Monitor",
     "Beacon Spammer",
     "WiFi Deauther",
@@ -142,6 +144,7 @@ const char *submenu_items[NUM_SUBMENU_ITEMS] = {
 };
 
 const unsigned char *wifi_submenu_icons[NUM_SUBMENU_ITEMS] = {
+    bitmap_icon_graph,
     bitmap_icon_wifi,
     bitmap_icon_antenna,
     bitmap_icon_wifi_jammer,
@@ -801,7 +804,7 @@ void handleWiFiSubmenuTouch() {
             delay(200);
 
             // Execute selected item
-            if (current_submenu_index == 8) { // Back
+            if (current_submenu_index == 9) { // Back
                 returnToMainMenu();
                 return;
             }
@@ -811,7 +814,52 @@ void handleWiFiSubmenuTouch() {
             waitForTouchRelease();
 
             switch (current_submenu_index) {
-                case 0: // Packet Monitor
+                case 0: // WiFi Analyzer (Spectrum + List, tap-to-attack)
+                    ChannelRadar::setup();
+                    while (!feature_exit_requested) {
+                        ChannelRadar::loop();
+                        if (ChannelRadar::isExitRequested()) feature_exit_requested = true;
+                        touchButtonsUpdate();
+                        if (isBackButtonTapped()) feature_exit_requested = true;
+                        if (IS_BOOT_PRESSED()) { delay(200); feature_exit_requested = true; }
+                    }
+                    // Attack handoff (same pattern as WiFi Scanner)
+                    if (ChannelRadar::isDeauthRequested()) {
+                        char bssid[18]; strncpy(bssid, ChannelRadar::getSelectedBSSID(), 17); bssid[17] = '\0';
+                        char ssid[33];  strncpy(ssid,  ChannelRadar::getSelectedSSID(),  32); ssid[32]  = '\0';
+                        int channel = ChannelRadar::getSelectedChannel();
+                        ChannelRadar::clearAttackRequest();
+                        ChannelRadar::cleanup();
+                        Deauther::setTarget(bssid, ssid, channel);
+                        Deauther::setup();
+                        feature_exit_requested = false;
+                        while (!feature_exit_requested) {
+                            Deauther::loop();
+                            touchButtonsUpdate();
+                            if (Deauther::isExitRequested()) feature_exit_requested = true;
+                            if (isBackButtonTapped()) feature_exit_requested = true;
+                            if (IS_BOOT_PRESSED()) { delay(200); feature_exit_requested = true; }
+                        }
+                        Deauther::cleanup();
+                    } else if (ChannelRadar::isCloneRequested()) {
+                        char ssid[33]; strncpy(ssid, ChannelRadar::getSelectedSSID(), 32); ssid[32] = '\0';
+                        ChannelRadar::clearAttackRequest();
+                        ChannelRadar::cleanup();
+                        CaptivePortal::setSSID(ssid);
+                        CaptivePortal::setup();
+                        feature_exit_requested = false;
+                        while (!feature_exit_requested) {
+                            CaptivePortal::loop();
+                            touchButtonsUpdate();
+                            if (CaptivePortal::isExitRequested()) feature_exit_requested = true;
+                            if (isBackButtonTapped()) feature_exit_requested = true;
+                        }
+                        CaptivePortal::cleanup();
+                    } else {
+                        ChannelRadar::cleanup();
+                    }
+                    break;
+                case 1: // Packet Monitor
                     PacketMonitor::setup();
                     while (!feature_exit_requested) {
                         PacketMonitor::loop();
@@ -821,7 +869,7 @@ void handleWiFiSubmenuTouch() {
                     }
                     PacketMonitor::cleanup();
                     break;
-                case 1: // Beacon Spammer
+                case 2: // Beacon Spammer
                     BeaconSpammer::setup();
                     while (!feature_exit_requested) {
                         BeaconSpammer::loop();
@@ -830,7 +878,7 @@ void handleWiFiSubmenuTouch() {
                     }
                     BeaconSpammer::cleanup();
                     break;
-                case 2: // Deauther
+                case 3: // Deauther
                     Deauther::setup();
                     while (!feature_exit_requested) {
                         Deauther::loop();
@@ -841,7 +889,7 @@ void handleWiFiSubmenuTouch() {
                     }
                     Deauther::cleanup();
                     break;
-                case 3: // Probe Sniffer (with Evil Twin spawn)
+                case 4: // Probe Sniffer (with Evil Twin spawn)
                     DeauthDetect::setup();
                     while (!feature_exit_requested) {
                         DeauthDetect::loop();
@@ -871,7 +919,7 @@ void handleWiFiSubmenuTouch() {
                         DeauthDetect::cleanup();
                     }
                     break;
-                case 4: // WiFi Scanner v2.0 (with Tap-to-Attack)
+                case 5: // WiFi Scanner v2.0 (with Tap-to-Attack)
                     WifiScan::setup();
                     while (!feature_exit_requested) {
                         WifiScan::loop();
@@ -919,7 +967,7 @@ void handleWiFiSubmenuTouch() {
                         WifiScan::cleanup();
                     }
                     break;
-                case 5: // Captive Portal (GARMR Evil Twin)
+                case 6: // Captive Portal (GARMR Evil Twin)
                     CaptivePortal::setup();
                     while (!feature_exit_requested) {
                         CaptivePortal::loop();
@@ -929,7 +977,7 @@ void handleWiFiSubmenuTouch() {
                     }
                     CaptivePortal::cleanup();
                     break;
-                case 6: // Station Scanner (with Deauth handoff)
+                case 7: // Station Scanner (with Deauth handoff)
                     StationScan::setup();
                     while (!feature_exit_requested) {
                         StationScan::loop();
@@ -957,7 +1005,7 @@ void handleWiFiSubmenuTouch() {
                         StationScan::cleanup();
                     }
                     break;
-                case 7: // Auth Flood
+                case 8: // Auth Flood
                     AuthFlood::setup();
                     while (!feature_exit_requested) {
                         AuthFlood::loop();
@@ -4118,6 +4166,10 @@ void setup() {
 
     // Small delay to show splash
     delay(2000);
+
+#ifdef CR_SELFTEST
+    ChannelRadar::selfTest();   // diagnostic build only — never returns
+#endif
 
     // Show main menu
     is_main_menu = true;
