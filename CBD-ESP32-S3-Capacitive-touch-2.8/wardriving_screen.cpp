@@ -14,6 +14,9 @@
 #include "utils.h"
 #include "icon.h"
 #include "nosifer_font.h"
+#include "wifi_band_utils.h"
+#include "radio_power_utils.h"
+#include "wh_ui.h"
 #include <TFT_eSPI.h>
 #include <WiFi.h>
 #include <esp_wifi.h>
@@ -106,10 +109,7 @@ static int wdBleResultCount = 0;
 // ═══════════════════════════════════════════════════════════════════════════
 
 static void drawWDIconBar() {
-    tft.drawLine(0, ICON_BAR_TOP, SCREEN_WIDTH, ICON_BAR_TOP, WONTHOUND_MAGENTA);
-    tft.fillRect(0, ICON_BAR_Y, SCREEN_WIDTH, ICON_BAR_H, WONTHOUND_DARK);
-    tft.drawBitmap(10, ICON_BAR_Y, bitmap_icon_go_back, 16, 16, WONTHOUND_MAGENTA);
-    tft.drawLine(0, ICON_BAR_BOTTOM, SCREEN_WIDTH, ICON_BAR_BOTTOM, WONTHOUND_HOTPINK);
+    whDrawHeaderBand("WARDRIVING");   // big "< Back" pill + centered title + GPS chip
 }
 
 static bool isWDBackTapped() {
@@ -454,9 +454,11 @@ static void updateWDValues() {
 // channels so STOP responds within ~200ms instead of blocking for 3+ seconds.
 // Returns false if user pressed STOP mid-scan (wdScanning already set false).
 static bool wdRunScan() {
-    for (uint8_t ch = 1; ch <= 13; ch++) {
+    for (uint8_t idx = 0; idx < wh_wifi_channel_count(); idx++) {
+        uint8_t ch = wh_wifi_channel_at(idx);
+        wh_wifi_prepare_channel(ch);
         // Scan single channel — blocks ~100-200ms
-        int n = WiFi.scanNetworks(false, true, false, 200, ch);
+        int n = wh_wifi_scan_networks(true, 200, ch, false);
 
         if (n > 0) {
             gpsUpdate();
@@ -510,17 +512,19 @@ static void wdRunBleScan() {
     WiFi.mode(WIFI_OFF);
     delay(50);
 
-    // Release Classic BT memory on first BLE cycle — we only use BLE, never Classic.
-    // This frees ~28KB of heap that Bluedroid would otherwise reserve for Classic BT.
-    // Must be called BEFORE esp_bt_controller_init() (which BLEDevice::init triggers).
-    // One-shot: once released, the memory stays free for all subsequent BLE cycles.
+    // ESP32-S3 is BLE-only; Classic/BTDM controller modes are unsupported. Keep
+    // the legacy release only for builds that actually provide Classic Bluetooth.
     if (!wdClassicBtReleased) {
+#if defined(ESP32S3_ES3C28P)
+        wdClassicBtReleased = true;
+#else
         esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
         wdClassicBtReleased = true;
+#endif
     }
 
     // Step 2: Init BLE
-    BLEDevice::init("");
+    wh_ble_init_max_power("");
     delay(150);  // Race condition fix — BLE controller needs time to settle
 
     wdBleScan = BLEDevice::getScan();
@@ -575,7 +579,7 @@ static void wdRunBleScan() {
 
     BLEScanResults foundDevices = wdBleScan->getResults();
 
-    // Step 5: Process results — copy into temp buffer first
+// Step 5: Process results — copy into temp buffer first
     wdBleResultCount = 0;
     int total = foundDevices.getCount();
     int cap = (total > WD_BLE_RESULT_MAX) ? WD_BLE_RESULT_MAX : total;
@@ -601,9 +605,9 @@ static void wdRunBleScan() {
 
         // Copy manufacturer data (first 8 bytes max)
         if (dev.haveManufacturerData()) {
-            std::string mfg = dev.getManufacturerData();
+            auto mfg = dev.getManufacturerData();
             r->mfgLen = (mfg.length() > 8) ? 8 : mfg.length();
-            memcpy(r->mfgData, mfg.data(), r->mfgLen);
+            memcpy(r->mfgData, mfg.c_str(), r->mfgLen);
         } else {
             r->mfgLen = 0;
         }

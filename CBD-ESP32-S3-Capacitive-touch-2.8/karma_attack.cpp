@@ -14,6 +14,7 @@
 #include "shared.h"
 #include "utils.h"
 #include "icon.h"
+#include "wh_ui.h"
 #include "nosifer_font.h"
 #include <TFT_eSPI.h>
 #include <WiFi.h>
@@ -37,10 +38,6 @@ namespace KarmaAttack {
 #define KA_DISPLAY_MS       300     // Display update interval
 #define KA_BLINK_MS         400     // Blink interval
 #define KA_CHANNEL_HOP_MS   500     // Channel hop interval
-
-// Channel hop sequence — priority channels first
-static const uint8_t hopChannels[] = { 1, 6, 11, 2, 3, 4, 5, 7, 8, 9, 10, 12, 13 };
-static const int hopChannelCount = 13;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // STATE
@@ -78,15 +75,16 @@ static bool blinkState = false;
 static int currentHopIndex = 0;
 static int scrollOffset = 0;
 
+static uint8_t currentHopChannel() {
+    return wh_wifi_channel_at((uint8_t)currentHopIndex);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // ICON BAR
 // ═══════════════════════════════════════════════════════════════════════════
 
 static void drawKAIconBar() {
-    tft.drawLine(0, ICON_BAR_TOP, SCREEN_WIDTH, ICON_BAR_TOP, WONTHOUND_MAGENTA);
-    tft.fillRect(0, ICON_BAR_Y, SCREEN_WIDTH, ICON_BAR_H, WONTHOUND_DARK);
-    tft.drawBitmap(10, ICON_BAR_Y, bitmap_icon_go_back, 16, 16, WONTHOUND_MAGENTA);
-    tft.drawLine(0, ICON_BAR_BOTTOM, SCREEN_WIDTH, ICON_BAR_BOTTOM, WONTHOUND_HOTPINK);
+    whDrawHeaderBand(nullptr);   // big "< Back" pill + accent rule + GPS chip
 }
 
 static bool isKABackTapped() {
@@ -251,8 +249,10 @@ static void startCollection() {
     esp_err_t e3 = esp_wifi_set_promiscuous(true);
     Serial.printf("[KARMA] set_promiscuous(true): %s (0x%x)\n", esp_err_to_name(e3), e3);
 
-    esp_err_t e4 = esp_wifi_set_channel(hopChannels[0], WIFI_SECOND_CHAN_NONE);
-    Serial.printf("[KARMA] set_channel(%d): %s (0x%x)\n", hopChannels[0], esp_err_to_name(e4), e4);
+    uint8_t firstChannel = wh_wifi_channel_at(0);
+    esp_err_t e4 = esp_wifi_set_channel(firstChannel, WIFI_SECOND_CHAN_NONE);
+    Serial.printf("[KARMA] set_channel(%d/%s): %s (0x%x)\n",
+                  firstChannel, wh_wifi_band_label(firstChannel), esp_err_to_name(e4), e4);
 
     Serial.println("[KARMA] ====== startCollection END ======");
 }
@@ -325,7 +325,8 @@ static void updateCollectDisplay() {
     tft.fillRect(SCALE_X(200), SCREEN_HEIGHT - 20, SCALE_W(40), 10, WONTHOUND_BLACK);
     tft.setTextColor(blinkState ? WONTHOUND_MAGENTA : WONTHOUND_GUNMETAL);
     tft.setCursor(SCALE_X(200), SCREEN_HEIGHT - 20);
-    tft.printf("CH:%d", hopChannels[currentHopIndex]);
+    uint8_t ch = currentHopChannel();
+    tft.printf("CH:%d/%s", ch, wh_wifi_band_label(ch));
 
     // SSID list
     int listY = SCALE_Y(92);
@@ -485,8 +486,8 @@ void loop() {
     if (currentPhase == PHASE_COLLECT) {
         // Channel hopping
         if (millis() - lastChannelHop >= KA_CHANNEL_HOP_MS) {
-            currentHopIndex = (currentHopIndex + 1) % hopChannelCount;
-            esp_wifi_set_channel(hopChannels[currentHopIndex], WIFI_SECOND_CHAN_NONE);
+            currentHopIndex = (currentHopIndex + 1) % wh_wifi_channel_count();
+            esp_wifi_set_channel(currentHopChannel(), WIFI_SECOND_CHAN_NONE);
             lastChannelHop = millis();
         }
 
@@ -531,9 +532,9 @@ void loop() {
             blinkState = !blinkState;
             lastBlink = millis();
             // DEBUG — dump stats every blink cycle
-            Serial.printf("[KARMA-DBG] callbacks=%u probes=%u ssids=%d clients=%d ch=%d\n",
+            Serial.printf("[KARMA-DBG] callbacks=%u probes=%u ssids=%d clients=%d ch=%d/%s\n",
                           dbgCallbackHits, totalProbes, ssidCount, clientCount,
-                          hopChannels[currentHopIndex]);
+                          currentHopChannel(), wh_wifi_band_label(currentHopChannel()));
         }
 
         // Update display

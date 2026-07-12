@@ -9,6 +9,7 @@
 #include "touch_buttons.h"
 #include "utils.h"
 #include "icon.h"
+#include "wh_ui.h"
 
 // ═══════════════════════════════════════════════════════════════════════════
 // SHARED ICON BAR FOR SUBCONFIG SCREENS
@@ -16,12 +17,11 @@
 
 #define SC_ICON_SIZE 16
 
-// Draw icon bar with back icon - MATCHES ORIGINAL WONTHOUND
+// Draw shared big "< Back" pill header (replaces legacy 16px back icon bar).
+// The old bar drew no title text, so pass nullptr; each screen draws its own
+// big centered title at y50, well below the band (y0..34).
 static void drawSubconfigUI() {
-    tft.drawLine(0, 19, SCREEN_WIDTH, 19, WONTHOUND_MAGENTA);
-    tft.fillRect(0, 20, SCREEN_WIDTH, 16, WONTHOUND_GUNMETAL);
-    tft.drawBitmap(10, 20, bitmap_icon_go_back, SC_ICON_SIZE, SC_ICON_SIZE, WONTHOUND_MAGENTA);
-    tft.drawLine(0, 36, SCREEN_WIDTH, 36, WONTHOUND_HOTPINK);
+    whDrawHeaderBand(nullptr);   // band + "< Back" pill + GPS chip
 }
 
 // Check if back icon was tapped

@@ -38,8 +38,14 @@
 #include <Arduino.h>
 #include <RCSwitch.h>
 #include <ELECHOUSE_CC1101_SRC_DRV.h>
-#include "driver/rmt.h"
 #include "cyd_config.h"
+
+#if !defined(ESP32C5_NM_CYD)
+  #include "driver/rmt.h"
+  #define WONTHOUND_SUBGHZ_USE_LEGACY_RMT 1
+#else
+  #define WONTHOUND_SUBGHZ_USE_LEGACY_RMT 0
+#endif
 
 // ═══════════════════════════════════════════════════════════════════════════
 // REPLAY ATTACK
@@ -187,7 +193,9 @@ bool initRMT();
 bool isRMTInitialized();
 
 // Transmit RMT symbols
+#if WONTHOUND_SUBGHZ_USE_LEGACY_RMT
 void rmtTransmit(rmt_item32_t* items, size_t numItems);
+#endif
 
 }  // namespace ReplayAttack
 

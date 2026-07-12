@@ -27,6 +27,7 @@
 #include "shared.h"
 #include "utils.h"
 #include "touch_buttons.h"
+#include "wh_ui.h"
 #include "spi_manager.h"
 #include "subconfig.h"
 #include "nrf24_config.h"
@@ -37,6 +38,7 @@
 
 // Attack modules
 #include "wifi_attacks.h"
+#include "channel_radar.h"
 #include "bluetooth_attacks.h"
 #include "subghz_attacks.h"
 #include "nrf24_attacks.h"
@@ -91,6 +93,11 @@ bool menu_initialized = false;
 int menu_scroll_y = 0;     // current vertical scroll offset (px)
 int menu_max_scroll = 0;   // computed from item count vs visible window
 
+// Capacitive submenu scrolling. The S3 panel is smooth enough that long
+// submenus should drag, not page.
+int submenu_scroll_y = 0;
+int submenu_max_scroll = 0;
+
 unsigned long last_interaction_time = 0;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -124,9 +131,10 @@ const unsigned char *bitmap_icons[NUM_MENU_ITEMS] = {
     bitmap_icon_skull_about
 };
 
-// WiFi Submenu - 9 items
-const int NUM_SUBMENU_ITEMS = 9;
+// WiFi Submenu - 10 items
+const int NUM_SUBMENU_ITEMS = 10;
 const char *submenu_items[NUM_SUBMENU_ITEMS] = {
+    "WiFi Analyzer",
     "Packet Monitor",
     "Beacon Spammer",
     "WiFi Deauther",
@@ -139,6 +147,7 @@ const char *submenu_items[NUM_SUBMENU_ITEMS] = {
 };
 
 const unsigned char *wifi_submenu_icons[NUM_SUBMENU_ITEMS] = {
+    bitmap_icon_graph,
     bitmap_icon_wifi,
     bitmap_icon_antenna,
     bitmap_icon_wifi_jammer,
@@ -366,6 +375,7 @@ const unsigned char *about_submenu_icons[about_NUM_SUBMENU_ITEMS] = {
 const char **active_submenu_items = nullptr;
 int active_submenu_size = 0;
 const unsigned char **active_submenu_icons = nullptr;
+const char *active_submenu_title = nullptr;
 
 // Settings
 int brightness_level = 255;
@@ -434,6 +444,14 @@ bool isInoBackTapped() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 void updateActiveSubmenu() {
+    submenu_scroll_y = 0;
+    submenu_max_scroll = 0;
+    if (current_menu_index >= 0 && current_menu_index < NUM_MENU_ITEMS) {
+        active_submenu_title = menu_items[current_menu_index];
+    } else {
+        active_submenu_title = "Menu";
+    }
+
     switch (current_menu_index) {
         case 0: // WiFi
             active_submenu_items = submenu_items;
@@ -494,51 +512,181 @@ void updateActiveSubmenu() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// DISPLAY SUBMENU - MATCHES ORIGINAL STYLE
-// ═══════════════════════════════════════════════════════════════════════════
+// DISPLAY SUBMENU - S3 capacitive scroll shell
+// ---------------------------------------------------------------------------
 
-// Draw one submenu entry as a generic rounded-rect button with centered text.
-// Positions match the touch handlers (SUBMENU_Y_START + i*SUBMENU_Y_SPACING).
+#define SUBMENU_HEADER_H      WH_HEADER_H
+#define SUBMENU_LIST_TOP      (SUBMENU_HEADER_H + SCALE_Y(7))
+#define SUBMENU_BTN_H         SCALE_Y(42)
+#define SUBMENU_ROW_SP        SCALE_Y(48)
+#define SUBMENU_LIST_BOTTOM   (SCREEN_HEIGHT - 4)
+#define SUBMENU_DRAG_SLOP     8
+
+static bool g_submenuSyntheticTouch = false;
+static bool g_submenuTapIsBack = false;
+static int  g_submenuTapIndex = -1;
+
+static int submenuViewportH() {
+    int h = SUBMENU_LIST_BOTTOM - SUBMENU_LIST_TOP;
+    return h > 0 ? h : 1;
+}
+
+static int submenuContentH() {
+    if (active_submenu_size <= 0) return 0;
+    return active_submenu_size * SUBMENU_ROW_SP + SCALE_Y(8);
+}
+
+static void clampSubmenuScroll() {
+    submenu_max_scroll = submenuContentH() - submenuViewportH();
+    if (submenu_max_scroll < 0) submenu_max_scroll = 0;
+    if (submenu_scroll_y < 0) submenu_scroll_y = 0;
+    if (submenu_scroll_y > submenu_max_scroll) submenu_scroll_y = submenu_max_scroll;
+}
+
+static int submenuDrawY(int i) {
+    return SUBMENU_LIST_TOP + i * SUBMENU_ROW_SP - submenu_scroll_y;
+}
+
+static int submenuLegacyY(int i) {
+    int y = SUBMENU_Y_START + i * SUBMENU_Y_SPACING;
+    if (i == active_submenu_size - 1) y += SUBMENU_LAST_GAP;
+    return y;
+}
+
+static int submenuIndexAt(int tx, int ty) {
+    if (tx < 0 || tx >= SCREEN_WIDTH) return -1;
+    if (ty < SUBMENU_LIST_TOP || ty >= SUBMENU_LIST_BOTTOM) return -1;
+    for (int i = 0; i < active_submenu_size; i++) {
+        int y = submenuDrawY(i);
+        if (ty >= y && ty < y + SUBMENU_BTN_H) return i;
+    }
+    return -1;
+}
+
 static void drawSubmenuButton(int i, bool sel) {
-    int yPos = SUBMENU_Y_START + i * SUBMENU_Y_SPACING;
-    if (i == active_submenu_size - 1) yPos += SUBMENU_LAST_GAP;   // extra gap before "Back"
-    int bx = 8, bw = SCREEN_WIDTH - 16, bh = SUBMENU_Y_SPACING - 4;
+    if (!active_submenu_items || i < 0 || i >= active_submenu_size) return;
+    int y = submenuDrawY(i);
+    if (y + SUBMENU_BTN_H < SUBMENU_LIST_TOP || y > SUBMENU_LIST_BOTTOM) return;
+
+    int bx = 8;
+    int bw = SCREEN_WIDTH - 16;
     uint16_t fill   = sel ? WONTHOUND_VIOLET : WONTHOUND_DARK;
     uint16_t border = sel ? WONTHOUND_HOTPINK : WONTHOUND_MAGENTA;
     uint16_t txtcol = sel ? TFT_WHITE : WONTHOUND_MAGENTA;
-    tft.fillRoundRect(bx, yPos, bw, bh, 5, fill);
-    tft.drawRoundRect(bx, yPos, bw, bh, 5, border);
+    tft.fillRoundRect(bx, y, bw, SUBMENU_BTN_H, 7, fill);
+    tft.drawRoundRect(bx, y, bw, SUBMENU_BTN_H, 7, border);
+
+    if (active_submenu_icons && active_submenu_icons[i]) {
+        tft.drawBitmap(bx + 12, y + (SUBMENU_BTN_H - 16) / 2, active_submenu_icons[i], 16, 16, txtcol);
+    }
+
     tft.setTextFont(2);
     tft.setTextSize(1);
-    tft.setTextDatum(MC_DATUM);
+    tft.setTextDatum(ML_DATUM);
     tft.setTextColor(txtcol);
-    tft.drawString(active_submenu_items[i], SCREEN_WIDTH / 2, yPos + bh / 2);
+    tft.drawString(active_submenu_items[i], bx + 36, y + SUBMENU_BTN_H / 2);
     tft.setTextDatum(TL_DATUM);
+}
+
+static void drawSubmenuScrollbar() {
+    if (submenu_max_scroll <= 0) return;
+    int trackH = submenuViewportH();
+    int trackX = SCREEN_WIDTH - 4;
+    int trackY = SUBMENU_LIST_TOP;
+    tft.fillRect(trackX, trackY, 2, trackH, WONTHOUND_DARK);
+    int thumbH = (trackH * trackH) / submenuContentH();
+    if (thumbH < 18) thumbH = 18;
+    if (thumbH > trackH) thumbH = trackH;
+    int thumbY = trackY + ((trackH - thumbH) * submenu_scroll_y) / submenu_max_scroll;
+    tft.fillRect(trackX - 1, thumbY, 4, thumbH, WONTHOUND_HOTPINK);
 }
 
 void displaySubmenu() {
     menu_initialized = false;
     last_menu_index = -1;
+    clampSubmenuScroll();
 
-    if (!submenu_initialized) {
-        tft.fillScreen(TFT_BLACK);
-        for (int i = 0; i < active_submenu_size; i++)
-            drawSubmenuButton(i, i == current_submenu_index);
-        submenu_initialized = true;
-        last_submenu_index = current_submenu_index;
+    tft.fillScreen(TFT_BLACK);
+    whDrawHeaderBand(active_submenu_title ? active_submenu_title : "Menu");
+
+    for (int i = 0; i < active_submenu_size; i++) {
+        drawSubmenuButton(i, i == current_submenu_index);
     }
-
-    // Move highlight (redraw just the two affected buttons)
-    if (last_submenu_index != current_submenu_index) {
-        if (last_submenu_index >= 0) drawSubmenuButton(last_submenu_index, false);
-        drawSubmenuButton(current_submenu_index, true);
-        last_submenu_index = current_submenu_index;
-    }
-
+    drawSubmenuScrollbar();
     drawStatusBar();
+
+    submenu_initialized = true;
+    last_submenu_index = current_submenu_index;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
+static void clearSubmenuSyntheticTouch() {
+    g_submenuSyntheticTouch = false;
+    g_submenuTapIsBack = false;
+    g_submenuTapIndex = -1;
+}
+
+static void prepareSubmenuGesture() {
+    clearSubmenuSyntheticTouch();
+    if (!in_sub_menu || feature_active || !active_submenu_items || active_submenu_size <= 0) return;
+
+    touchButtonsUpdate();
+    uint16_t sx, sy;
+    if (!peekTouchPoint(&sx, &sy)) return;
+
+    if (isBackButtonTapped()) {
+        g_submenuSyntheticTouch = true;
+        g_submenuTapIsBack = true;
+        waitForTouchRelease();
+        return;
+    }
+
+    int startY = sy;
+    int startScroll = submenu_scroll_y;
+    bool dragged = false;
+    uint32_t started = millis();
+
+    while (isStillTouched() && millis() - started < 1200) {
+        uint16_t cx, cy;
+        if (peekTouchPoint(&cx, &cy)) {
+            int dy = (int)cy - startY;
+            if (abs(dy) > SUBMENU_DRAG_SLOP) dragged = true;
+            if (dragged) {
+                submenu_scroll_y = startScroll - dy;
+                clampSubmenuScroll();
+                displaySubmenu();
+            }
+        }
+        delay(8);
+    }
+
+    waitForTouchRelease();
+    last_interaction_time = millis();
+    if (dragged) return;
+
+    int tapped = submenuIndexAt(sx, sy);
+    if (tapped >= 0) {
+        g_submenuSyntheticTouch = true;
+        g_submenuTapIndex = tapped;
+    }
+}
+
+static bool inoIsBackButtonTapped() {
+    if (feature_active || !in_sub_menu) return isBackButtonTapped();
+    if (g_submenuSyntheticTouch) return g_submenuTapIsBack;
+    return isBackButtonTapped();
+}
+
+static bool inoIsTouchInArea(int x, int y, int w, int h) {
+    (void)x;
+    (void)w;
+    (void)h;
+    if (feature_active || !in_sub_menu) return isTouchInArea(x, y, w, h);
+    if (!g_submenuSyntheticTouch || g_submenuTapIsBack || g_submenuTapIndex < 0) return false;
+    return y == submenuLegacyY(g_submenuTapIndex);
+}
+
+#define isBackButtonTapped() inoIsBackButtonTapped()
+#define isTouchInArea(x, y, w, h) inoIsTouchInArea((x), (y), (w), (h))
 // HOME MENU — scrollable app-grid (redesign: 2-col color tiles, drag-scroll).
 // The canvas is taller than the screen, so items never clip — you scroll to them.
 // ═══════════════════════════════════════════════════════════════════════════
@@ -708,7 +856,7 @@ void handleWiFiSubmenuTouch() {
             delay(200);
 
             // Execute selected item
-            if (current_submenu_index == 8) { // Back
+            if (current_submenu_index == 9) { // Back
                 returnToMainMenu();
                 return;
             }
@@ -718,7 +866,51 @@ void handleWiFiSubmenuTouch() {
             waitForTouchRelease();
 
             switch (current_submenu_index) {
-                case 0: // Packet Monitor
+                case 0: // WiFi Analyzer (2.4GHz Airwaves)
+                    ChannelRadar::setup();
+                    while (!feature_exit_requested) {
+                        ChannelRadar::loop();
+                        if (ChannelRadar::isExitRequested()) feature_exit_requested = true;
+                        touchButtonsUpdate();
+                        if (isBackButtonTapped()) feature_exit_requested = true;
+                        if (IS_BOOT_PRESSED()) { delay(200); feature_exit_requested = true; }
+                    }
+                    if (ChannelRadar::isDeauthRequested()) {
+                        char bssid[18]; strncpy(bssid, ChannelRadar::getSelectedBSSID(), 17); bssid[17] = '\0';
+                        char ssid[33];  strncpy(ssid,  ChannelRadar::getSelectedSSID(),  32); ssid[32]  = '\0';
+                        int channel = ChannelRadar::getSelectedChannel();
+                        ChannelRadar::clearAttackRequest();
+                        ChannelRadar::cleanup();
+                        Deauther::setTarget(bssid, ssid, channel);
+                        Deauther::setup();
+                        feature_exit_requested = false;
+                        while (!feature_exit_requested) {
+                            Deauther::loop();
+                            touchButtonsUpdate();
+                            if (Deauther::isExitRequested()) feature_exit_requested = true;
+                            if (isBackButtonTapped()) feature_exit_requested = true;
+                            if (IS_BOOT_PRESSED()) { delay(200); feature_exit_requested = true; }
+                        }
+                        Deauther::cleanup();
+                    } else if (ChannelRadar::isCloneRequested()) {
+                        char ssid[33]; strncpy(ssid, ChannelRadar::getSelectedSSID(), 32); ssid[32] = '\0';
+                        ChannelRadar::clearAttackRequest();
+                        ChannelRadar::cleanup();
+                        CaptivePortal::setSSID(ssid);
+                        CaptivePortal::setup();
+                        feature_exit_requested = false;
+                        while (!feature_exit_requested) {
+                            CaptivePortal::loop();
+                            touchButtonsUpdate();
+                            if (CaptivePortal::isExitRequested()) feature_exit_requested = true;
+                            if (isBackButtonTapped()) feature_exit_requested = true;
+                        }
+                        CaptivePortal::cleanup();
+                    } else {
+                        ChannelRadar::cleanup();
+                    }
+                    break;
+                case 1: // Packet Monitor
                     PacketMonitor::setup();
                     while (!feature_exit_requested) {
                         PacketMonitor::loop();
@@ -728,7 +920,7 @@ void handleWiFiSubmenuTouch() {
                     }
                     PacketMonitor::cleanup();
                     break;
-                case 1: // Beacon Spammer
+                case 2: // Beacon Spammer
                     if (!isOffensiveAllowed()) {
                         // (offensive-tool gate removed with VALHALLA)
                         if (!showDisclaimerScreen()) break;
@@ -742,7 +934,7 @@ void handleWiFiSubmenuTouch() {
                     }
                     BeaconSpammer::cleanup();
                     break;
-                case 2: // Deauther
+                case 3: // Deauther
                     if (!isOffensiveAllowed()) {
                         // (offensive-tool gate removed with VALHALLA)
                         if (!showDisclaimerScreen()) break;
@@ -758,7 +950,7 @@ void handleWiFiSubmenuTouch() {
                     }
                     Deauther::cleanup();
                     break;
-                case 3: // Probe Sniffer (with Evil Twin spawn)
+                case 4: // Probe Sniffer (with Evil Twin spawn)
                     DeauthDetect::setup();
                     while (!feature_exit_requested) {
                         DeauthDetect::loop();
@@ -788,7 +980,7 @@ void handleWiFiSubmenuTouch() {
                         DeauthDetect::cleanup();
                     }
                     break;
-                case 4: // WiFi Scanner v2.0 (with Tap-to-Attack)
+                case 5: // WiFi Scanner v2.0 (with Tap-to-Attack)
                     WifiScan::setup();
                     while (!feature_exit_requested) {
                         WifiScan::loop();
@@ -836,7 +1028,7 @@ void handleWiFiSubmenuTouch() {
                         WifiScan::cleanup();
                     }
                     break;
-                case 5: // Captive Portal (GARMR Evil Twin)
+                case 6: // Captive Portal (GARMR Evil Twin)
                     if (!isOffensiveAllowed()) {
                         // (offensive-tool gate removed with VALHALLA)
                         if (!showDisclaimerScreen()) break;
@@ -851,7 +1043,7 @@ void handleWiFiSubmenuTouch() {
                     }
                     CaptivePortal::cleanup();
                     break;
-                case 6: // Station Scanner (with Deauth handoff)
+                case 7: // Station Scanner (with Deauth handoff)
                     StationScan::setup();
                     while (!feature_exit_requested) {
                         StationScan::loop();
@@ -879,7 +1071,7 @@ void handleWiFiSubmenuTouch() {
                         StationScan::cleanup();
                     }
                     break;
-                case 7: // Auth Flood
+                case 8: // Auth Flood
                     if (!isOffensiveAllowed()) {
                         // (offensive-tool gate removed with VALHALLA)
                         if (!showDisclaimerScreen()) break;
@@ -1025,6 +1217,8 @@ void handleLunaticFringeHubTouch() {
     active_submenu_items = (const char **)lunafringe_submenu_items_flash;
     active_submenu_size = lunafringe_NUM_SUBMENU_ITEMS;
     active_submenu_icons = (const unsigned char **)lunafringe_submenu_icons_flash;
+    active_submenu_title = "Lunatic Fringe";
+    submenu_scroll_y = 0;
     current_submenu_index = 0;
     submenu_initialized = false;
     displaySubmenu();
@@ -1119,6 +1313,8 @@ void handleLunaticFringeHubTouch() {
                 active_submenu_items = (const char **)lunafringe_submenu_items_flash;
                 active_submenu_size = lunafringe_NUM_SUBMENU_ITEMS;
                 active_submenu_icons = (const unsigned char **)lunafringe_submenu_icons_flash;
+                active_submenu_title = "Lunatic Fringe";
+                submenu_scroll_y = 0;
                 current_submenu_index = 0;
                 submenu_initialized = false;
                 displaySubmenu();
@@ -1132,6 +1328,8 @@ void handleLunaticFringeHubTouch() {
     active_submenu_items = bluetooth_submenu_items;
     active_submenu_size = bluetooth_NUM_SUBMENU_ITEMS;
     active_submenu_icons = bluetooth_submenu_icons;
+    active_submenu_title = "Bluetooth";
+    submenu_scroll_y = 0;
     current_submenu_index = 0;
     submenu_initialized = false;
 }
@@ -3570,6 +3768,7 @@ void handleButtons() {
     }
 
     if (in_sub_menu) {
+        prepareSubmenuGesture();
         switch (current_menu_index) {
             case 0: handleWiFiSubmenuTouch(); break;
             case 1: handleBluetoothSubmenuTouch(); break;
@@ -3583,6 +3782,7 @@ void handleButtons() {
             case 9: handleAboutPage(); break;
             default: break;
         }
+        clearSubmenuSyntheticTouch();
     } else {
         // Home screen: drag-to-scroll + tap-to-enter (scrollable app grid).
         touchButtonsUpdate();
@@ -3896,6 +4096,11 @@ void setup() {
     Serial.println("        " CYD_BOARD_NAME);
     Serial.println("===============================================");
     Serial.println();
+
+#if defined(ESP32S3_ES3C28P)
+    Serial.printf("[S3-PERF] CPU=%uMHz cores=%u ArduinoCore=%d\n",
+                  getCpuFrequencyMhz(), ESP.getChipCores(), xPortGetCoreID());
+#endif
 
     // Initialize display
     tft.init();

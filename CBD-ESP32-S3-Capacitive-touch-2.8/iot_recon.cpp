@@ -16,10 +16,12 @@
 #include "iot_recon.h"
 #include "shared.h"
 #include "utils.h"
+#include "wh_ui.h"
 #include "touch_buttons.h"
 #include "spi_manager.h"
 #include "nosifer_font.h"
 #include "icon.h"
+#include "wifi_band_utils.h"
 #include <WiFi.h>
 #include <WiFiClient.h>
 #include "storage.h"
@@ -1370,11 +1372,8 @@ static void stopScanTask() {
 // =============================================================================
 
 static void doWifiScan() {
-    WiFi.mode(WIFI_STA);
-    WiFi.disconnect();
-    delay(100);
-
-    int n = WiFi.scanNetworks(false, false);
+    int n = wh_wifi_scan_networks(false, 300, 0, true);
+    Serial.printf("[IOT] S3 WiFi scan result=%d\n", n);
     networkCount = 0;
     for (int i = 0; i < n && networkCount < IOT_MAX_NETWORKS; i++) {
         String ssid = WiFi.SSID(i);
@@ -1429,7 +1428,7 @@ static void saveReportToSD() {
     digitalWrite(SD_CS, HIGH);
 
     if (!SD.begin(SD_CS)) {
-        SPI.begin(18, 19, 23, SD_CS);
+        SPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
         if (!SD.begin(SD_CS, SPI, 4000000)) {
             sdReady = false;
             return;
@@ -1531,7 +1530,7 @@ static void loadCapturedCreds() {
     digitalWrite(SD_CS, HIGH);
 
     if (!SD.begin(SD_CS)) {
-        SPI.begin(18, 19, 23, SD_CS);
+        SPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
         if (!SD.begin(SD_CS, SPI, 4000000)) {
             return;
         }
@@ -1582,7 +1581,7 @@ static void loadSdWordlist() {
     digitalWrite(SD_CS, HIGH);
 
     if (!SD.begin(SD_CS)) {
-        SPI.begin(18, 19, 23, SD_CS);
+        SPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
         if (!SD.begin(SD_CS, SPI, 4000000)) {
             totalCredCount = CRED_COUNT;
             return;
@@ -1747,7 +1746,16 @@ static void handleCredsTouch(int x, int y) {
 static void drawWifiScanScreen() {
     tft.fillScreen(WONTHOUND_BLACK);
     drawStatusBar();
-    drawInoIconBar();
+
+    // Top control bar: dedicated Back (owns top-left) + Rescan / Manual / Creds
+    whDrawBackButton();
+    {
+        WhRect a[3];
+        whTopBarActions(3, a);
+        whTopBtn(a[0], "RESCAN", WH_OUTLINE);
+        whTopBtn(a[1], "MANUAL", WH_OUTLINE);
+        whTopBtn(a[2], "CREDS",  WH_OUTLINE);
+    }
 
     drawGlitchTitle(SCALE_Y(55), "IoT RECON");
     drawGlitchStatus(SCALE_Y(80), "SELECT TARGET", WONTHOUND_HOTPINK);
@@ -1797,34 +1805,6 @@ static void drawWifiScanScreen() {
         tft.setCursor(SCREEN_WIDTH - 25, y + 2);
         tft.printf("ch%d", foundNetworks[i].channel);
     }
-
-    // Buttons at bottom
-    int btnY = SCALE_Y(290);
-    int btnW = SCALE_W(70);
-    int btnH = SCALE_H(22);
-
-    // Rescan button
-    tft.fillRoundRect(5, btnY, btnW, btnH, 3, WONTHOUND_DARK);
-    tft.drawRoundRect(5, btnY, btnW, btnH, 3, WONTHOUND_HOTPINK);
-    tft.setTextColor(WONTHOUND_HOTPINK);
-    tft.setCursor(12, btnY + btnH / 3);
-    tft.print("Rescan");
-
-    // Manual entry button
-    int manX = SCALE_X(82);
-    tft.fillRoundRect(manX, btnY, btnW, btnH, 3, WONTHOUND_DARK);
-    tft.drawRoundRect(manX, btnY, btnW, btnH, 3, WONTHOUND_MAGENTA);
-    tft.setTextColor(WONTHOUND_MAGENTA);
-    tft.setCursor(manX + 6, btnY + btnH / 3);
-    tft.print("Manual");
-
-    // Captured creds button
-    int credX = SCALE_X(162);
-    tft.fillRoundRect(credX, btnY, btnW, btnH, 3, WONTHOUND_DARK);
-    tft.drawRoundRect(credX, btnY, btnW, btnH, 3, WONTHOUND_GREEN);
-    tft.setTextColor(WONTHOUND_GREEN);
-    tft.setCursor(credX + 8, btnY + btnH / 3);
-    tft.print("Creds");
 }
 
 // =============================================================================
@@ -2084,12 +2064,16 @@ static void drawScanScreen() {
     tft.fillScreen(WONTHOUND_BLACK);
     drawStatusBar();
 
-    // Icon bar
-    tft.fillRect(0, ICON_BAR_Y, SCREEN_WIDTH, ICON_BAR_H, WONTHOUND_DARK);
-    tft.drawBitmap(10, ICON_BAR_Y, bitmap_icon_go_back, 16, 16, WONTHOUND_MAGENTA);
-    // Save icon
-    tft.drawBitmap(SCREEN_WIDTH - 26, ICON_BAR_Y, bitmap_icon_save, 16, 16, WONTHOUND_MAGENTA);
-    tft.drawLine(0, ICON_BAR_BOTTOM, SCREEN_WIDTH, ICON_BAR_BOTTOM, WONTHOUND_HOTPINK);
+    // Top control bar: dedicated Back (owns top-left) + SAVE / UP / DN / EXIT
+    whDrawBackButton();
+    {
+        WhRect a[4];
+        whTopBarActions(4, a);
+        whTopBtn(a[0], "SAVE", WH_OUTLINE);
+        whTopBtn(a[1], "UP",   WH_OUTLINE);
+        whTopBtn(a[2], "DN",   WH_OUTLINE);
+        whTopBtn(a[3], "EXIT", WH_DANGER);
+    }
 
     // Title
     drawGlitchTitle(SCALE_Y(52), "IoT RECON");
@@ -2254,26 +2238,10 @@ static void drawKillFeed() {
         tft.print(killFeed[i].text);
     }
 
-    // Bottom bar
+    // Controls (SAVE / UP / DN / EXIT) now live in the top control bar; clear the
+    // old bottom-bar strip so no stale labels remain.
     int btnY = SCALE_Y(292);
-    tft.fillRect(0, btnY, SCREEN_WIDTH, SCREEN_HEIGHT - btnY, WONTHOUND_DARK);
-
-    // Scroll buttons
-    tft.setTextColor(WONTHOUND_MAGENTA);
-    tft.setCursor(5, btnY + 4);
-    tft.print("UP");
-    tft.setCursor(SCALE_X(55), btnY + 4);
-    tft.print("DN");
-
-    // Save button
-    tft.setCursor(SCALE_X(120), btnY + 4);
-    tft.setTextColor(WONTHOUND_GREEN);
-    tft.print("SAVE");
-
-    // Exit button
-    tft.setCursor(SCREEN_WIDTH - 30, btnY + 4);
-    tft.setTextColor(WONTHOUND_HOTPINK);
-    tft.print("EXIT");
+    tft.fillRect(0, btnY, SCREEN_WIDTH, SCREEN_HEIGHT - btnY, WONTHOUND_BLACK);
 }
 
 // =============================================================================
@@ -2409,6 +2377,47 @@ static void drawDetailView(int idx) {
 // =============================================================================
 
 static void handleWifiScanTouch(int x, int y) {
+    // ── Top control bar: Back (dedicated top-left) + Rescan / Manual / Creds ──
+    WhRect a[3];
+    whTopBarActions(3, a);
+
+    // Back — exit module
+    if (whHit(x, y, whBackButtonRect())) {
+        exitRequested = true;
+        waitForTouchRelease();
+        return;
+    }
+
+    // Rescan
+    if (whHit(x, y, a[0])) {
+        tft.setTextColor(WONTHOUND_HOTPINK);
+        tft.setCursor(5, SCALE_Y(100));
+        tft.print("Scanning...              ");
+        doWifiScan();
+        drawWifiScanScreen();
+        waitForTouchRelease();
+        return;
+    }
+
+    // Manual SSID
+    if (whHit(x, y, a[1])) {
+        kbInput = "";
+        currentScreen = IOT_SCR_KEYBOARD_SSID;
+        drawKeyboardScreen("Enter SSID:", 32);
+        waitForTouchRelease();
+        return;
+    }
+
+    // Captured Creds (from Evil Twin)
+    if (whHit(x, y, a[2])) {
+        loadCapturedCreds();
+        credScroll = 0;
+        currentScreen = IOT_SCR_CREDS;
+        drawCredsScreen();
+        waitForTouchRelease();
+        return;
+    }
+
     // Network list tap
     int listY = SCALE_Y(115);
     int lineH = SCALE_H(18);
@@ -2436,43 +2445,6 @@ static void handleWifiScanTouch(int x, int y) {
             return;
         }
     }
-
-    // Button bar
-    int btnY = SCALE_Y(290);
-    int btnW = SCALE_W(70);
-    int btnH = SCALE_H(22);
-
-    // Rescan
-    if (x >= 5 && x <= 5 + btnW && y >= btnY && y <= btnY + btnH + 3) {
-        tft.setTextColor(WONTHOUND_HOTPINK);
-        tft.setCursor(5, SCALE_Y(100));
-        tft.print("Scanning...              ");
-        doWifiScan();
-        drawWifiScanScreen();
-        waitForTouchRelease();
-        return;
-    }
-
-    // Manual SSID
-    int manX = SCALE_X(82);
-    if (x >= manX && x <= manX + btnW && y >= btnY && y <= btnY + btnH + 3) {
-        kbInput = "";
-        currentScreen = IOT_SCR_KEYBOARD_SSID;
-        drawKeyboardScreen("Enter SSID:", 32);
-        waitForTouchRelease();
-        return;
-    }
-
-    // Captured Creds (from Evil Twin)
-    int credX = SCALE_X(162);
-    if (x >= credX && x <= credX + btnW && y >= btnY && y <= btnY + btnH + 3) {
-        loadCapturedCreds();
-        credScroll = 0;
-        currentScreen = IOT_SCR_CREDS;
-        drawCredsScreen();
-        waitForTouchRelease();
-        return;
-    }
 }
 
 // =============================================================================
@@ -2480,17 +2452,20 @@ static void handleWifiScanTouch(int x, int y) {
 // =============================================================================
 
 static void handleScanScreenTouch(int x, int y) {
-    // Back icon
-    if (y >= (ICON_BAR_Y - 2) && y <= (ICON_BAR_BOTTOM + 4) && x >= 5 && x <= 30) {
+    // ── Top control bar: Back (dedicated top-left) + SAVE / UP / DN / EXIT ──
+    WhRect a[4];
+    whTopBarActions(4, a);
+
+    // Back — exit module
+    if (whHit(x, y, whBackButtonRect())) {
         exitRequested = true;
         waitForTouchRelease();
         return;
     }
 
-    // Save icon (top right)
-    if (y >= (ICON_BAR_Y - 2) && y <= (ICON_BAR_BOTTOM + 4) && x >= SCREEN_WIDTH - 30) {
+    // SAVE — write report to SD, brief confirmation
+    if (whHit(x, y, a[0])) {
         saveReportToSD();
-        // Brief confirmation
         tft.fillRect(SCALE_X(60), SCALE_Y(140), SCALE_W(120), SCALE_H(30), WONTHOUND_DARK);
         tft.drawRect(SCALE_X(60), SCALE_Y(140), SCALE_W(120), SCALE_H(30), WONTHOUND_GREEN);
         tft.setTextColor(WONTHOUND_GREEN);
@@ -2498,6 +2473,35 @@ static void handleScanScreenTouch(int x, int y) {
         tft.print(sdReady ? "Saved to SD!" : "SD Error!");
         delay(1000);
         killFeedDirty = true;
+        waitForTouchRelease();
+        return;
+    }
+
+    // UP — scroll feed toward older messages
+    if (whHit(x, y, a[1])) {
+        if (killFeedScroll > 0) {
+            killFeedScroll--;
+            killFeedDirty = true;
+        }
+        waitForTouchRelease();
+        return;
+    }
+
+    // DN — scroll feed toward newer messages
+    if (whHit(x, y, a[2])) {
+        int feedH = SCALE_Y(290) - SCALE_Y(125);
+        int maxLines = feedH / 12;
+        if (killFeedCount > maxLines && killFeedScroll < killFeedCount - maxLines) {
+            killFeedScroll++;
+            killFeedDirty = true;
+        }
+        waitForTouchRelease();
+        return;
+    }
+
+    // EXIT — leave module
+    if (whHit(x, y, a[3])) {
+        exitRequested = true;
         waitForTouchRelease();
         return;
     }
@@ -2531,48 +2535,6 @@ static void handleScanScreenTouch(int x, int y) {
                 }
             }
         }
-    }
-
-    // Bottom bar
-    int btnBarY = SCALE_Y(292);
-
-    // Scroll — left side of bottom bar
-    if (y >= btnBarY && x < SCALE_X(50)) {
-        // Scroll UP (see older messages)
-        if (killFeedScroll > 0) {
-            killFeedScroll--;
-            killFeedDirty = true;
-        }
-        return;
-    }
-    if (y >= btnBarY && x >= SCALE_X(50) && x < SCALE_X(100)) {
-        // Scroll DOWN (see newer messages)
-        int feedH = SCALE_Y(290) - SCALE_Y(125);
-        int maxLines = feedH / 12;
-        if (killFeedCount > maxLines && killFeedScroll < killFeedCount - maxLines) {
-            killFeedScroll++;
-            killFeedDirty = true;
-        }
-        return;
-    }
-
-    // Save button
-    if (y >= btnBarY && x >= SCALE_X(110) && x < SCALE_X(160)) {
-        saveReportToSD();
-        tft.fillRect(SCALE_X(60), SCALE_Y(140), SCALE_W(120), SCALE_H(30), WONTHOUND_DARK);
-        tft.drawRect(SCALE_X(60), SCALE_Y(140), SCALE_W(120), SCALE_H(30), WONTHOUND_GREEN);
-        tft.setTextColor(WONTHOUND_GREEN);
-        tft.setCursor(SCALE_X(75), SCALE_Y(150));
-        tft.print(sdReady ? "Saved to SD!" : "SD Error!");
-        delay(1000);
-        killFeedDirty = true;
-        return;
-    }
-
-    // Exit button
-    if (y >= btnBarY && x >= SCREEN_WIDTH - 40) {
-        exitRequested = true;
-        return;
     }
 }
 
@@ -2664,13 +2626,6 @@ void loop() {
     switch (currentScreen) {
 
         case IOT_SCR_WIFI_SCAN:
-            // Back icon
-            if (touched && isTopLeftBackTouch(&tx, &ty)) {
-                lastTouchTime = millis();
-                exitRequested = true;
-                waitForTouchRelease();
-                return;
-            }
             if (touched) {
                 lastTouchTime = millis();
                 handleWifiScanTouch(tx, ty);

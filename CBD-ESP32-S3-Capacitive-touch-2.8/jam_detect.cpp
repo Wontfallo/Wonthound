@@ -26,6 +26,8 @@
 #include "icon.h"
 #include "skull_bg.h"
 #include "nosifer_font.h"
+#include "wifi_band_utils.h"
+#include "wh_ui.h"
 
 extern TFT_eSPI tft;
 
@@ -115,27 +117,26 @@ static const char* threatText(ThreatLevel level) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// ICON BAR — 3 icons: Back (left), status area (center), Power icon (right)
-// Matches PacketMonitor/Deauther icon bar with embedded status
+// CONTROL BAR — shared wh_ui big-button strip: dedicated Back (owns the fixed
+// top-left Back zone) + one POWER action across the rest. All 4 detectors are
+// always-on monitors, so POWER shows WH_ON (running); tapping it powers the
+// detector down (requests exit) via each namespace's touch handler.
+// The old middle status readout was a status-only slot and has been dropped.
 // ═══════════════════════════════════════════════════════════════════════════
 
 #define JD_ICON_SIZE 16
 
 static void drawJdIconBar() {
-    tft.drawLine(0, ICON_BAR_TOP, SCREEN_WIDTH, ICON_BAR_TOP, WONTHOUND_MAGENTA);
-    tft.fillRect(0, ICON_BAR_Y, SCREEN_WIDTH, ICON_BAR_H, WONTHOUND_GUNMETAL);
-    tft.drawBitmap(10, ICON_BAR_Y, bitmap_icon_go_back, JD_ICON_SIZE, JD_ICON_SIZE, WONTHOUND_MAGENTA);
-    tft.drawBitmap(SCALE_X(210), ICON_BAR_Y, bitmap_icon_power, JD_ICON_SIZE, JD_ICON_SIZE, WONTHOUND_MAGENTA);
-    tft.drawLine(0, ICON_BAR_BOTTOM, SCREEN_WIDTH, ICON_BAR_BOTTOM, WONTHOUND_HOTPINK);
+    whDrawBackButton();
+    WhRect a[1];
+    whTopBarActions(1, a);
+    whTopBtn(a[0], "POWER", WH_ON);
 }
 
-// Update status text inside icon bar (like PacketMonitor)
+// Status-only slot dropped in the wh_ui redesign — kept as a no-op so existing
+// per-loop call sites compile without painting over the new Back/POWER bar.
 static void drawJdIconBarStatus(const char* text) {
-    tft.fillRect(SCALE_X(30), ICON_BAR_Y, SCALE_W(170), 16, WONTHOUND_GUNMETAL);
-    tft.setTextColor(WONTHOUND_MAGENTA);
-    tft.setTextSize(1);
-    tft.setCursor(SCALE_X(35), ICON_BAR_Y + 4);
-    tft.print(text);
+    (void)text;
 }
 
 static bool isJdBackTapped() {
@@ -349,7 +350,7 @@ static bool jdNrfInit() {
 
     SPI.end();
     delay(10);
-    SPI.begin(18, 19, 23);
+    SPI.begin(RADIO_SPI_SCK, RADIO_SPI_MISO, RADIO_SPI_MOSI);
     SPI.setDataMode(SPI_MODE0);
     SPI.setFrequency(4000000);
     SPI.setBitOrder(MSBFIRST);
@@ -410,7 +411,6 @@ static uint32_t calBeaconSum = 0;
 
 // Channel hopping
 static uint8_t currentChannel = 1;
-static const uint8_t hopChannels[] = {1, 6, 11};
 static uint8_t hopIndex = 0;
 static unsigned long lastHop = 0;
 #define HOP_INTERVAL_MS 500
@@ -521,7 +521,7 @@ void setup() {
     threat = THREAT_CALIBRATING;
     exitRequested = false;
     hopIndex = 0;
-    currentChannel = hopChannels[0];
+    currentChannel = wh_wifi_channel_at(0);
 
     // Initialize WiFi in promiscuous mode
     WiFi.mode(WIFI_OFF);
@@ -555,13 +555,26 @@ void loop() {
         exitRequested = true;
         return;
     }
+    // POWER action (top-bar): tapping it powers the detector down (exit).
+    {
+        uint16_t tx, ty;
+        if (getTouchPoint(&tx, &ty)) {
+            WhRect a[1];
+            whTopBarActions(1, a);
+            if (whHit(tx, ty, a[0])) {
+                waitForTouchRelease();
+                exitRequested = true;
+                return;
+            }
+        }
+    }
 
     unsigned long now = millis();
 
     // Channel hopping
     if (now - lastHop >= HOP_INTERVAL_MS) {
-        hopIndex = (hopIndex + 1) % 3;
-        currentChannel = hopChannels[hopIndex];
+        hopIndex = (hopIndex + 1) % wh_wifi_channel_count();
+        currentChannel = wh_wifi_channel_at(hopIndex);
         esp_wifi_set_channel(currentChannel, WIFI_SECOND_CHAN_NONE);
         lastHop = now;
     }
@@ -982,6 +995,19 @@ void loop() {
     if (isJdBackTapped() || buttonPressed(BTN_BACK) || buttonPressed(BTN_BOOT)) {
         exitRequested = true;
         return;
+    }
+    // POWER action (top-bar): tapping it powers the detector down (exit).
+    {
+        uint16_t tx, ty;
+        if (getTouchPoint(&tx, &ty)) {
+            WhRect a[1];
+            whTopBarActions(1, a);
+            if (whHit(tx, ty, a[0])) {
+                waitForTouchRelease();
+                exitRequested = true;
+                return;
+            }
+        }
     }
 
     unsigned long now = millis();
@@ -1423,6 +1449,19 @@ void loop() {
         exitRequested = true;
         return;
     }
+    // POWER action (top-bar): tapping it powers the detector down (exit).
+    {
+        uint16_t tx, ty;
+        if (getTouchPoint(&tx, &ty)) {
+            WhRect a[1];
+            whTopBarActions(1, a);
+            if (whHit(tx, ty, a[0])) {
+                waitForTouchRelease();
+                exitRequested = true;
+                return;
+            }
+        }
+    }
 
     unsigned long now = millis();
 
@@ -1576,7 +1615,6 @@ static int nrfCalCount = 0;
 // WiFi channel hop
 static uint8_t fsHopIdx = 0;
 static unsigned long fsLastHop = 0;
-static const uint8_t fsHopCh[] = {1, 6, 11};
 
 // Timeline (60s rolling, 1 sample/sec)
 #define TIMELINE_LEN 60
@@ -1647,7 +1685,7 @@ static void fsScanSubGHz() {
 static void fsScanNRF24() {
     digitalWrite(CC1101_CS, HIGH);
     SPI.end(); delay(2);
-    SPI.begin(18, 19, 23);
+    SPI.begin(RADIO_SPI_SCK, RADIO_SPI_MISO, RADIO_SPI_MOSI);
     SPI.setDataMode(SPI_MODE0);
     SPI.setFrequency(8000000);
     SPI.setBitOrder(MSBFIRST);
@@ -1806,7 +1844,7 @@ void setup() {
     esp_wifi_init(&cfg);
     esp_wifi_set_mode(WIFI_MODE_STA);
     esp_wifi_start();
-    esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
+    esp_wifi_set_channel(wh_wifi_channel_at(0), WIFI_SECOND_CHAN_NONE);
     esp_wifi_set_promiscuous(true);
     esp_wifi_set_promiscuous_rx_cb(fsPromiscCB);
 
@@ -1825,6 +1863,19 @@ void loop() {
         exitRequested = true;
         return;
     }
+    // POWER action (top-bar): tapping it powers the detector down (exit).
+    {
+        uint16_t tx, ty;
+        if (getTouchPoint(&tx, &ty)) {
+            WhRect a[1];
+            whTopBarActions(1, a);
+            if (whHit(tx, ty, a[0])) {
+                waitForTouchRelease();
+                exitRequested = true;
+                return;
+            }
+        }
+    }
 
     unsigned long now = millis();
 
@@ -1836,8 +1887,8 @@ void loop() {
 
     // WiFi channel hop
     if (now - fsLastHop >= 500) {
-        fsHopIdx = (fsHopIdx + 1) % 3;
-        esp_wifi_set_channel(fsHopCh[fsHopIdx], WIFI_SECOND_CHAN_NONE);
+        fsHopIdx = (fsHopIdx + 1) % wh_wifi_channel_count();
+        esp_wifi_set_channel(wh_wifi_channel_at(fsHopIdx), WIFI_SECOND_CHAN_NONE);
         fsLastHop = now;
     }
 

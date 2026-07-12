@@ -8,6 +8,7 @@
 #include "shared.h"
 #include "touch_buttons.h"
 #include "utils.h"
+#include "wh_ui.h"
 #include "icon.h"
 #include "skull_bg.h"
 #include "nuke_icon.h"
@@ -15,8 +16,10 @@
 #include "gps_module.h"
 #include "spi_manager.h"
 #include "storage.h"
+#include "radio_power_utils.h"
 #include <Preferences.h>
 #include <arduinoFFT.h>
+#include <BLEDevice.h>
 #include "esp_bt.h"
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -26,7 +29,7 @@
 namespace PacketMonitor {
 
 // Configuration
-#define MAX_CH 14
+#define MAX_CH wh_wifi_channel_count()
 #define SNAP_LEN 2324
 #define FFT_SAMPLES 256
 
@@ -231,7 +234,11 @@ static void drawFftFrame() {
     const unsigned int center_x = SCREEN_WIDTH / 2;
     const unsigned int half_width = min((int)(FFT_SAMPLES >> 1), (int)center_x);
     const unsigned int icon_bar_bottom = ICON_BAR_BOTTOM;
-    const unsigned int area_graph_y = icon_bar_bottom + 2;
+    // Reserve a 12-px status strip below the control bar for CH / PKT (the old
+    // status was painted INSIDE the button bar and covered CH- / CH+).
+    const unsigned int status_strip_y = icon_bar_bottom + 2;
+    const unsigned int status_strip_h = 12;
+    const unsigned int area_graph_y = status_strip_y + status_strip_h;
     const unsigned int area_graph_height = SCALE_H(50);
     const unsigned int waterfall_y = area_graph_y + area_graph_height + 3;
 
@@ -273,14 +280,16 @@ static void drawFftFrame() {
         last_y[j] = current_y;
     }
 
-    // ─── STATUS INFO BAR ────────────────────────────────────────────────
-    tft.fillRect(SCALE_X(30), ICON_BAR_Y, SCALE_W(130), 16, WONTHOUND_DARK);
+    // ─── STATUS INFO STRIP ──────────────────────────────────────────────
+    // Draws in the reserved strip BELOW the button bar (was previously drawn
+    // INSIDE the bar at ICON_BAR_Y, which painted over the CH- / CH+ buttons).
+    tft.fillRect(0, status_strip_y, SCREEN_WIDTH, status_strip_h, WONTHOUND_DARK);
     tft.setTextColor(WONTHOUND_MAGENTA);
     tft.setTextSize(1);
-    tft.setCursor(SCALE_X(35), ICON_BAR_Y + 4);
+    tft.setCursor(SCALE_X(5), status_strip_y + 2);
     tft.print("Ch:");
     tft.print(currentChannel);
-    tft.setCursor(SCALE_X(80), ICON_BAR_Y + 4);
+    tft.setCursor(SCALE_X(60), status_strip_y + 2);
     tft.print("Pkt:");
     tft.print(pmDisplayPktCount);
 
@@ -329,7 +338,11 @@ static void doSamplingFFT() {
     const unsigned int center_x = SCREEN_WIDTH / 2;
     const unsigned int half_width = min((int)(FFT_SAMPLES >> 1), (int)center_x);  // Clamp to screen edge
     const unsigned int icon_bar_bottom = ICON_BAR_BOTTOM;
-    const unsigned int area_graph_y = icon_bar_bottom + 2;
+    // Match the drawFftFrame layout: 12 px status strip between the button bar
+    // and the FFT area graph, so CH / PKT doesn't paint over the buttons.
+    const unsigned int status_strip_y = icon_bar_bottom + 2;
+    const unsigned int status_strip_h = 12;
+    const unsigned int area_graph_y = status_strip_y + status_strip_h;
     const unsigned int area_graph_height = SCALE_H(50);
     const unsigned int waterfall_y = area_graph_y + area_graph_height + 3;
 
@@ -430,38 +443,42 @@ static void doSamplingFFT() {
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // STATUS INFO BAR - Shows CH and Packet count (x=30-160, doesn't touch icons)
+    // STATUS INFO STRIP - Reserved 12-px band BELOW the button bar (not on it).
     // ═══════════════════════════════════════════════════════════════════════
 
-    tft.fillRect(SCALE_X(30), ICON_BAR_Y, SCALE_W(130), 16, WONTHOUND_DARK);
+    tft.fillRect(0, status_strip_y, SCREEN_WIDTH, status_strip_h, WONTHOUND_DARK);
     tft.setTextColor(WONTHOUND_MAGENTA);
     tft.setTextSize(1);
 
-    tft.setCursor(SCALE_X(35), ICON_BAR_Y + 4);
+    tft.setCursor(SCALE_X(5), status_strip_y + 2);
     tft.print("Ch:");
     tft.print(currentChannel);
 
-    tft.setCursor(SCALE_X(80), ICON_BAR_Y + 4);
+    tft.setCursor(SCALE_X(60), status_strip_y + 2);
     tft.print("Pkt:");
     tft.print(packetCounter);
 
     delay(10);
 }
 
+// Quick-tune: hop to the next US primary 2.4GHz channel (1 -> 6 -> 11 -> 1).
+// Off-primary channels jump up to the next primary.
+static int nextPrimaryChannel(int cur) {
+    if (cur < 6)  return 6;
+    if (cur < 11) return 11;
+    return 1;
+}
+
 // Draw UI elements - WONTHOUND EDITION with skull watermark
 static void drawUI() {
-#define PM_ICON_SIZE 16
-#define PM_ICON_NUM 3
-    static int iconX[PM_ICON_NUM] = {SCALE_X(170), SCALE_X(210), 10};
-    static int iconY = ICON_BAR_Y;
-
-    // Icon area background - full width DARK
-    tft.fillRect(0, ICON_BAR_Y, SCREEN_WIDTH, ICON_BAR_H, WONTHOUND_DARK);
-
-    // Draw bitmap icons
-    tft.drawBitmap(iconX[0], iconY, bitmap_icon_sort_up_plus, PM_ICON_SIZE, PM_ICON_SIZE, WONTHOUND_MAGENTA);   // CH+
-    tft.drawBitmap(iconX[1], iconY, bitmap_icon_sort_down_minus, PM_ICON_SIZE, PM_ICON_SIZE, WONTHOUND_MAGENTA); // CH-
-    tft.drawBitmap(iconX[2], iconY, bitmap_icon_go_back, PM_ICON_SIZE, PM_ICON_SIZE, WONTHOUND_MAGENTA);        // Back
+    // Resistive-friendly top control bar: dedicated Back button owns the fixed
+    // top-left zone; CH- / CH+ steppers + a 1/6/11 quick-tune spread across the rest.
+    whDrawBackButton();
+    WhRect pmActions[3];
+    whTopBarActions(3, pmActions);
+    whTopBtn(pmActions[0], "CH-", WH_OUTLINE);
+    whTopBtn(pmActions[1], "CH+", WH_OUTLINE);
+    whTopBtn(pmActions[2], "1/6/11", WH_ACCENT);
 
     // Separator lines
     tft.drawLine(0, ICON_BAR_BOTTOM, SCREEN_WIDTH, ICON_BAR_BOTTOM, WONTHOUND_HOTPINK);
@@ -508,7 +525,7 @@ void setup() {
 
     // Load saved channel
     preferences.begin("wonthound_pm", false);
-    currentChannel = preferences.getUInt("channel", 1);
+    currentChannel = wh_normalize_wifi_channel(preferences.getUInt("channel", 1));
     preferences.end();
 
     // Full teardown first — handles ANY prior WiFi state (promiscuous, APSTA, STA, etc.)
@@ -591,31 +608,34 @@ void loop() {
     if (millis() - lastChannelChange > 120) {
         uint16_t tx, ty;
         if (peekTouchPoint(&tx, &ty)) {
-            // Icon bar area
-            if (ty >= ICON_BAR_TOUCH_TOP && ty <= ICON_BAR_TOUCH_BOTTOM) {
-                // Back icon at x=10, but use a finger-sized hitbox.
-                if (tx <= 52) {
-                    exitRequested = true;
-                    consumeTouch();
-                    lastChannelChange = millis();
-                    return;
-                }
-                // CH+ icon
-                else if (tx >= SCALE_X(155) && tx <= SCALE_X(195)) {
-                    int newChannel = currentChannel + 1;
-                    if (newChannel > MAX_CH) newChannel = 1;
-                    setChannel(newChannel);
-                    consumeTouch();
-                    lastChannelChange = millis();
-                }
-                // CH- icon
-                else if (tx >= SCALE_X(198) && tx <= SCREEN_WIDTH - 1) {
-                    int newChannel = currentChannel - 1;
-                    if (newChannel < 1) newChannel = MAX_CH;
-                    setChannel(newChannel);
-                    consumeTouch();
-                    lastChannelChange = millis();
-                }
+            WhRect pmActions[3];
+            whTopBarActions(3, pmActions);
+            // Dedicated Back button owns the fixed top-left zone.
+            if (whHit(tx, ty, whBackButtonRect())) {
+                exitRequested = true;
+                consumeTouch();
+                lastChannelChange = millis();
+                return;
+            }
+            // CH- action
+            else if (whHit(tx, ty, pmActions[0])) {
+                int newChannel = wh_next_wifi_channel((uint8_t)currentChannel, -1);
+                setChannel(newChannel);
+                consumeTouch();
+                lastChannelChange = millis();
+            }
+            // CH+ action
+            else if (whHit(tx, ty, pmActions[1])) {
+                int newChannel = wh_next_wifi_channel((uint8_t)currentChannel, 1);
+                setChannel(newChannel);
+                consumeTouch();
+                lastChannelChange = millis();
+            }
+            // 1/6/11 quick-tune — hop to the next US primary channel
+            else if (whHit(tx, ty, pmActions[2])) {
+                setChannel(nextPrimaryChannel(currentChannel));
+                consumeTouch();
+                lastChannelChange = millis();
             }
         }
     }
@@ -630,14 +650,12 @@ void loop() {
 
     // Also handle hardware buttons if available
     if (buttonPressed(BTN_LEFT)) {
-        int newChannel = currentChannel - 1;
-        if (newChannel < 1) newChannel = MAX_CH;
+        int newChannel = wh_next_wifi_channel((uint8_t)currentChannel, -1);
         setChannel(newChannel);
     }
 
     if (buttonPressed(BTN_RIGHT)) {
-        int newChannel = currentChannel + 1;
-        if (newChannel > MAX_CH) newChannel = 1;
+        int newChannel = wh_next_wifi_channel((uint8_t)currentChannel, 1);
         setChannel(newChannel);
     }
 
@@ -657,10 +675,7 @@ void loop() {
 }
 
 void setChannel(int channel) {
-    currentChannel = channel;
-    if (currentChannel > MAX_CH || currentChannel < 1) {
-        currentChannel = 1;
-    }
+    currentChannel = wh_normalize_wifi_channel(channel);
 
     // Save to preferences
     preferences.begin("wonthound_pm", false);
@@ -753,8 +768,9 @@ static const int ssidCount = sizeof(ssidList) / sizeof(ssidList[0]);
 // MATRIX RAIN EFFECT - SSIDs falling like The Matrix
 // ═══════════════════════════════════════════════════════════════════════════
 #define RAIN_COLUMNS 20
-#define RAIN_AREA_TOP SCALE_Y(70)
-#define RAIN_AREA_BOTTOM (SCREEN_HEIGHT - SCALE_H(10))
+// Rain sits between the status-chip row and the bottom action bar (see drawUI()).
+#define RAIN_AREA_TOP SCALE_Y(96)
+#define RAIN_AREA_BOTTOM SCALE_Y(252)
 #define CHAR_HEIGHT 10
 #define TRAIL_LENGTH 12
 
@@ -1006,7 +1022,7 @@ static void nukeTxTask(void* param) {
 
     while (nukeTxTaskRunning) {
         // Random channel — hop every packet for maximum chaos
-        byte channel = random(1, 13);
+        byte channel = wh_random_wifi_channel();
         esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
 
         // Randomize all MAC bytes
@@ -1104,72 +1120,57 @@ static bool initialized = false;
 static bool spamming = false;
 static bool exitRequested = false;
 
+// ═══════════════════════════════════════════════════════════════════════════
+// REDESIGNED UI — big, thumb-friendly controls (replaces the old 16px icon bar)
+// Layout (240x320): header band → glitch title → status chips → matrix rain →
+// bottom action bar with four large buttons.  Built on the shared wh_ui toolkit.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Bespoke bottom-bar geometry: CH- | CH+ | START/STOP (wide) | NUKE.
+static WhRect bsChMinus, bsChPlus, bsStart, bsNuke;
+
+static void bsComputeButtons() {
+    int y = WH_BAR_Y, h = WH_BAR_H;
+    bsChMinus = { 8,   (int16_t)y, 40, (int16_t)h };
+    bsChPlus  = { 54,  (int16_t)y, 40, (int16_t)h };
+    bsStart   = { 100, (int16_t)y, 78, (int16_t)h };
+    bsNuke    = { 184, (int16_t)y, 48, (int16_t)h };
+}
+
 // Glitch title
 static void drawHeader() {
-    drawGlitchText(SCALE_Y(55), "BEACON SPAM", &Nosifer_Regular10pt7b);
+    drawGlitchText(SCALE_Y(52), "BEACON SPAM", &Nosifer_Regular10pt7b);
 }
 
-// Draw status header area (below glitch title)
+// Status chip row (channel / state / TX counter). Refreshed live while spamming.
 static void drawStatusHeader() {
-    const int statusY = SCALE_Y(58);
-    // Clear status area
-    tft.fillRect(0, statusY, SCREEN_WIDTH, 10, WONTHOUND_BLACK);
+    const int y = SCALE_Y(70);
+    tft.fillRect(0, y - 2, SCREEN_WIDTH, 26, WONTHOUND_BLACK);
 
-    // Channel display
-    tft.setTextSize(1);
-    tft.setTextColor(WONTHOUND_MAGENTA);
-    tft.setCursor(5, statusY + 2);
-    tft.print("CH:");
-    tft.setTextColor(WONTHOUND_BRIGHT);
-    tft.print((int)bsChannel);
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%d", (int)bsChannel);
+    whStatusChip(8, y, 56, "CH", buf, WONTHOUND_MAGENTA, WONTHOUND_BRIGHT);
 
-    // Status
-    tft.setCursor(SCALE_X(60), statusY + 2);
-    tft.setTextColor(WONTHOUND_MAGENTA);
-    tft.print("STATUS:");
-    if (spamming) {
-        tft.setTextColor(WONTHOUND_HOTPINK);
-        tft.print("ACTIVE");
-    } else {
-        tft.setTextColor(WONTHOUND_GUNMETAL);
-        tft.print("IDLE");
-    }
+    whStatusChip(70, y, 78, "", spamming ? "ACTIVE" : "IDLE",
+                 spamming ? WONTHOUND_HOTPINK : WONTHOUND_VIOLET,
+                 spamming ? WONTHOUND_HOTPINK : WONTHOUND_GUNMETAL);
 
-    // Beacon counter
-    tft.setCursor(SCALE_X(160), statusY + 2);
-    tft.setTextColor(WONTHOUND_MAGENTA);
-    tft.print("TX:");
-    tft.setTextColor(WONTHOUND_HOTPINK);
-    tft.print((uint32_t)beaconCount);
-
-    // Separator line
-    tft.drawLine(0, statusY + 10, SCREEN_WIDTH, statusY + 10, WONTHOUND_VIOLET);
+    snprintf(buf, sizeof(buf), "%lu", (unsigned long)beaconCount);
+    whStatusChip(154, y, SCREEN_WIDTH - 154 - 8, "TX", buf, WONTHOUND_MAGENTA, WONTHOUND_HOTPINK);
 }
 
-// Draw UI - WontHound Matrix Edition
+// Draw the full screen chrome — WontHound Matrix Edition (big-button redesign).
 static void drawUI() {
-#define BS_ICON_SIZE 16
-#define BS_ICON_NUM 5
-    static int iconX[BS_ICON_NUM] = {SCALE_X(130), SCALE_X(160), SCALE_X(190), SCALE_X(220), 10};
-    static int iconY = ICON_BAR_Y;
+    whDrawHeaderBand(nullptr);   // band + "< Back" pill + GPS chip
+    drawHeader();                // glitch title
+    drawStatusHeader();          // status chips
 
-    // Icon bar background
-    tft.fillRect(0, ICON_BAR_Y, SCREEN_WIDTH, ICON_BAR_H, WONTHOUND_DARK);
-
-    // Draw bitmap icons
-    tft.drawBitmap(iconX[4], iconY, bitmap_icon_go_back, BS_ICON_SIZE, BS_ICON_SIZE, WONTHOUND_MAGENTA);          // Back
-    tft.drawBitmap(iconX[0], iconY, bitmap_icon_sort_down_minus, BS_ICON_SIZE, BS_ICON_SIZE, WONTHOUND_MAGENTA);  // CH-
-    tft.drawBitmap(iconX[1], iconY, bitmap_icon_sort_up_plus, BS_ICON_SIZE, BS_ICON_SIZE, WONTHOUND_MAGENTA);     // CH+
-    tft.drawBitmap(iconX[2], iconY, bitmap_icon_start, BS_ICON_SIZE, BS_ICON_SIZE,
-                   spamming ? WONTHOUND_HOTPINK : WONTHOUND_MAGENTA);  // Start (highlight when active)
-    tft.drawBitmap(iconX[3], iconY, bitmap_icon_nuke, BS_ICON_SIZE, BS_ICON_SIZE, WONTHOUND_MAGENTA);             // Nuke
-
-    // Separator line
-    tft.drawLine(0, ICON_BAR_BOTTOM, SCREEN_WIDTH, ICON_BAR_BOTTOM, WONTHOUND_HOTPINK);
-
-    // Glitch title + status header
-    drawHeader();
-    drawStatusHeader();
+    // Bottom action bar — four large buttons.
+    whActionButton(bsChMinus, "CH -", NULL, WH_OUTLINE);
+    whActionButton(bsChPlus,  "CH +", NULL, WH_OUTLINE);
+    whActionButton(bsStart, spamming ? "STOP" : "START", bitmap_icon_start,
+                   spamming ? WH_ON : WH_ACCENT);
+    whActionButton(bsNuke, "NUKE", bitmap_icon_nuke, WH_DANGER);
 }
 
 void setup() {
@@ -1179,7 +1180,7 @@ void setup() {
 
     // Always redraw screen on entry
     tft.fillScreen(WONTHOUND_BLACK);
-    drawStatusBar();
+    bsComputeButtons();
     drawUI();
     spamming = false;
     exitRequested = false;
@@ -1222,7 +1223,7 @@ void setup() {
         return;
     }
 
-    esp_wifi_set_max_tx_power(82);       // Max TX power: 20.5 dBm
+    wh_wifi_apply_max_tx_power("BeaconTX");
     esp_wifi_set_ps(WIFI_PS_NONE);       // Disable power saving for max throughput
     esp_wifi_set_promiscuous(true);
 
@@ -1242,59 +1243,55 @@ void loop() {
     touchButtonsUpdate();
 
     // ═══════════════════════════════════════════════════════════════════════
-    // ICON BAR TOUCH HANDLING - With proper release detection
-    // Icons at: CH- x=130, CH+ x=160, Start x=190, Nuke x=220, Back x=10
+    // BIG-BUTTON TOUCH HANDLING — back pill (top-left) + bottom action bar.
+    // Every target is a large rounded button (see bsComputeButtons / drawUI).
     // ═══════════════════════════════════════════════════════════════════════
     uint16_t tx, ty;
     if (getTouchPoint(&tx, &ty)) {
-        // Icon bar area
-        if (ty >= ICON_BAR_Y && ty <= ICON_BAR_BOTTOM + 4) {
-            // Wait for touch release to prevent repeated triggers
+        // BACK — the fixed top-left zone / the visible pill.
+        if (whHit(tx, ty, whBackRect())) {
             waitForTouchRelease();
-
-            // Back icon at x=10
-            if (tx >= 5 && tx <= 30) {
-                exitRequested = true;
-                return;
-            }
-            // CH- icon
-            else if (tx >= SCALE_X(125) && tx <= SCALE_X(150)) {
-                bsChannel = (bsChannel == 1) ? 14 : bsChannel - 1;
-                // Channel change picked up by Core 0 task on next iteration
-                if (!spamming) esp_wifi_set_channel(bsChannel, WIFI_SECOND_CHAN_NONE);
-                drawStatusHeader();
-            }
-            // CH+ icon
-            else if (tx >= SCALE_X(155) && tx <= SCALE_X(180)) {
-                bsChannel = (bsChannel == 14) ? 1 : bsChannel + 1;
-                // Channel change picked up by Core 0 task on next iteration
-                if (!spamming) esp_wifi_set_channel(bsChannel, WIFI_SECOND_CHAN_NONE);
-                drawStatusHeader();
-            }
-            // Start icon
-            else if (tx >= SCALE_X(185) && tx <= SCALE_X(210)) {
-                toggle();
-                if (spamming) {
-                    // Clear rain area and reinit
-                    tft.fillRect(0, RAIN_AREA_TOP, SCREEN_WIDTH, RAIN_AREA_BOTTOM - RAIN_AREA_TOP, WONTHOUND_BLACK);
-                    initMatrixRain();
-                }
-                drawUI();
-            }
-            // Nuke icon at right edge
-            else if (tx >= (tft.width() - 25) && tx <= tft.width()) {
-                // Stop normal TX task if running before entering nuke
-                if (spamming) {
-                    stopTxTask();
-                    spamming = false;
-                }
-                nukeMode();
-                // Restore screen after nuke
-                tft.fillScreen(WONTHOUND_BLACK);
-                drawStatusBar();
-                drawUI();
+            exitRequested = true;
+            return;
+        }
+        // CH-
+        else if (whHit(tx, ty, bsChMinus)) {
+            waitForTouchRelease();
+            bsChannel = wh_next_wifi_channel((uint8_t)bsChannel, -1);
+            if (!spamming) esp_wifi_set_channel(bsChannel, WIFI_SECOND_CHAN_NONE);
+            drawStatusHeader();
+        }
+        // CH+
+        else if (whHit(tx, ty, bsChPlus)) {
+            waitForTouchRelease();
+            bsChannel = wh_next_wifi_channel((uint8_t)bsChannel, 1);
+            if (!spamming) esp_wifi_set_channel(bsChannel, WIFI_SECOND_CHAN_NONE);
+            drawStatusHeader();
+        }
+        // START / STOP
+        else if (whHit(tx, ty, bsStart)) {
+            waitForTouchRelease();
+            toggle();
+            if (spamming) {
+                // Clear rain area and reinit
+                tft.fillRect(0, RAIN_AREA_TOP, SCREEN_WIDTH, RAIN_AREA_BOTTOM - RAIN_AREA_TOP, WONTHOUND_BLACK);
                 initMatrixRain();
             }
+            drawUI();
+        }
+        // NUKE
+        else if (whHit(tx, ty, bsNuke)) {
+            waitForTouchRelease();
+            // Stop normal TX task if running before entering nuke
+            if (spamming) {
+                stopTxTask();
+                spamming = false;
+            }
+            nukeMode();
+            // Restore screen after nuke
+            tft.fillScreen(WONTHOUND_BLACK);
+            drawUI();
+            initMatrixRain();
         }
     }
 
@@ -1354,9 +1351,7 @@ bool isSpamming() {
 }
 
 void setChannel(int channel) {
-    if (channel < 1) channel = 1;
-    if (channel > 14) channel = 14;
-    bsChannel = channel;
+    bsChannel = wh_normalize_wifi_channel(channel);
     // If not spamming, set directly. If spamming, Core 0 picks it up next iteration.
     if (!spamming) esp_wifi_set_channel(bsChannel, WIFI_SECOND_CHAN_NONE);
 }
@@ -1567,12 +1562,10 @@ void wifiCleanup() {
     WiFi.mode(WIFI_OFF);
     delay(50);
 
-    // 3. Release BT controller if a BLE module left it initialized
-    //    BLEDevice::deinit(false) only disables the controller, doesn't deinit it
-    //    Controller holds ~60KB + radio resources that WiFi needs
-    //    Returns ESP_ERR_INVALID_STATE if already deinited — harmless
-    esp_bt_controller_disable();
-    esp_bt_controller_deinit();
+    // 3. Release BLE through the library that owns its initialized flag. Raw
+    //    controller deinit leaves BLEDevice believing the S3 controller is live,
+    //    which breaks the next BLE app. false keeps BLE memory reusable.
+    BLEDevice::deinit(false);
 
     // 4. ESP-IDF level stop — do NOT call esp_wifi_deinit() here.
     //    Deinit desyncs Arduino's lowLevelInitDone flag — next WiFi.mode(WIFI_STA)
@@ -1669,7 +1662,7 @@ static void initAttackMode() {
     ap_config.ap.beacon_interval = 60000;
     esp_wifi_set_config(WIFI_IF_AP, &ap_config);
 
-    esp_wifi_set_max_tx_power(82);
+    wh_wifi_apply_max_tx_power("DeauthTX");
     esp_wifi_set_ps(WIFI_PS_NONE);
     inAttackMode = true;
 
@@ -1860,22 +1853,14 @@ static void drawTabBar(const char* leftButton, bool leftDisabled, const char* pr
     }
 }
 
-// Draw UI - MATCHES ORIGINAL ESP32-DIV (Deauther has 2 icons: rescan, back)
+// Draw UI - resistive-friendly top control bar (dedicated Back + Wardrive/Rescan)
 static void drawDeautherUI() {
-#define DT_ICON_SIZE 16
-    static int iconY = ICON_BAR_Y;
-
-    // Icon bar background - WONTHOUND DARK
-    tft.fillRect(0, ICON_BAR_Y, SCREEN_WIDTH, ICON_BAR_H, WONTHOUND_DARK);
-
-    // Draw bitmap icons
-    // Back at x=10, Wardriving at scaled 190, Rescan at scaled 220
-    tft.drawBitmap(10, iconY, bitmap_icon_go_back, DT_ICON_SIZE, DT_ICON_SIZE, WONTHOUND_MAGENTA);
-    tft.drawBitmap(SCALE_X(220), iconY, bitmap_icon_undo, DT_ICON_SIZE, DT_ICON_SIZE, WONTHOUND_MAGENTA);
-
-    // Wardriving toggle icon (antenna icon - lit when active)
-    uint16_t wdColor = wardrivingEnabled ? WONTHOUND_HOTPINK : WONTHOUND_GUNMETAL;
-    tft.drawBitmap(SCALE_X(190), iconY, bitmap_icon_antenna, DT_ICON_SIZE, DT_ICON_SIZE, wdColor);
+    whDrawBackButton();
+    WhRect dtActions[2];
+    whTopBarActions(2, dtActions);
+    // Wardriving toggle (solid pink when logging), then Rescan action.
+    whTopBtn(dtActions[0], "WARDRV", wardrivingEnabled ? WH_ON : WH_ACCENT);
+    whTopBtn(dtActions[1], "RESCAN", WH_OUTLINE);
 
     // Separator line
     tft.drawLine(0, ICON_BAR_BOTTOM, SCREEN_WIDTH, ICON_BAR_BOTTOM, WONTHOUND_HOTPINK);
@@ -2161,14 +2146,9 @@ bool scanNetworks() {
         exitAttackMode();
     }
 
-    // Use Arduino WiFi API for scanning — reliable, no event handler conflicts
-    // Raw esp_wifi_scan_get_ap_records() gets results stolen by Arduino's
-    // WIFI_EVENT_SCAN_DONE handler. WiFi.scanNetworks() works through that handler.
-    WiFi.mode(WIFI_STA);
-    WiFi.disconnect();
-    delay(100);
-
-    int n = WiFi.scanNetworks(false, true);  // blocking, show hidden
+    // Use Arduino's WiFi API so scan events and retained results have one owner.
+    // Raw ESP-IDF attack modes are fully reset before returning to this path.
+    int n = wh_wifi_scan_networks(true, 300, 0, true);
     Serial.printf("[DEAUTH] WiFi.scanNetworks found %d networks\n", n);
 
     if (n <= 0) {
@@ -2283,60 +2263,59 @@ void loop() {
     if (millis() - lastIconTap > 200) {
         uint16_t tx, ty;
         if (getTouchPoint(&tx, &ty)) {
-            // Icon bar area
-            if (ty >= ICON_BAR_Y && ty <= ICON_BAR_BOTTOM) {
-                // Back icon at x=5-30
-                if (tx >= 5 && tx <= 30) {
-                    consumeTouch();
-                    if (selectedApIndex != -1) {
-                        if (attackRunning) stopDeauthTask();  // Kill Core 0 task first
-                        attackRunning = false;
-                        selectedApIndex = -1;
-                        exitAttackMode();  // Tear down raw ESP-IDF so Arduino scan works
-                        scanNetworks();    // Rescan with Arduino WiFi
-                        drawScanScreen();
-                    } else {
-                        exitRequested = true;
-                    }
-                    waitForTouchRelease();  // Wait for finger lift
-                    lastIconTap = millis();
-                    return;
-                }
-                // Wardriving toggle icon
-                else if (tx >= SCALE_X(175) && tx <= SCALE_X(210)) {
-                    consumeTouch();
-                    wardrivingEnabled = !wardrivingEnabled;
-                    if (wardrivingEnabled) {
-                        gpsSetup();  // Init GPS if not already
-                        if (!wardrivingStart()) {
-                            // SD card failed - disable wardriving
-                            wardrivingEnabled = false;
-                        }
-                    } else {
-                        wardrivingStop();
-                    }
-                    drawDeautherUI();  // Redraw icon bar
+            WhRect dtActions[2];
+            whTopBarActions(2, dtActions);
+            // Dedicated Back button owns the fixed top-left zone.
+            if (whHit(tx, ty, whBackButtonRect())) {
+                consumeTouch();
+                if (selectedApIndex != -1) {
+                    if (attackRunning) stopDeauthTask();  // Kill Core 0 task first
+                    attackRunning = false;
+                    selectedApIndex = -1;
+                    exitAttackMode();  // Tear down raw ESP-IDF so Arduino scan works
+                    scanNetworks();    // Rescan with Arduino WiFi
                     drawScanScreen();
-                    waitForTouchRelease();  // Wait for finger lift
-                    lastIconTap = millis();
-                    return;
+                } else {
+                    exitRequested = true;
                 }
-                // Rescan icon at right edge
-                else if (tx >= (tft.width() - 25) && tx <= tft.width()) {
-                    consumeTouch();
-                    if (selectedApIndex == -1) {
-                        scanNetworks();
-                        // Log to wardriving if enabled
-                        if (wardrivingEnabled && networkCount > 0) {
-                            gpsUpdate();  // Get fresh GPS data
-                            wardrivingLogScan(apList, networkCount);
-                        }
-                        drawScanScreen();
+                waitForTouchRelease();  // Wait for finger lift
+                lastIconTap = millis();
+                return;
+            }
+            // Wardriving toggle action
+            else if (whHit(tx, ty, dtActions[0])) {
+                consumeTouch();
+                wardrivingEnabled = !wardrivingEnabled;
+                if (wardrivingEnabled) {
+                    gpsSetup();  // Init GPS if not already
+                    if (!wardrivingStart()) {
+                        // SD card failed - disable wardriving
+                        wardrivingEnabled = false;
                     }
-                    waitForTouchRelease();  // Wait for finger lift
-                    lastIconTap = millis();
-                    return;
+                } else {
+                    wardrivingStop();
                 }
+                drawDeautherUI();  // Redraw icon bar
+                drawScanScreen();
+                waitForTouchRelease();  // Wait for finger lift
+                lastIconTap = millis();
+                return;
+            }
+            // Rescan action
+            else if (whHit(tx, ty, dtActions[1])) {
+                consumeTouch();
+                if (selectedApIndex == -1) {
+                    scanNetworks();
+                    // Log to wardriving if enabled
+                    if (wardrivingEnabled && networkCount > 0) {
+                        gpsUpdate();  // Get fresh GPS data
+                        wardrivingLogScan(apList, networkCount);
+                    }
+                    drawScanScreen();
+                }
+                waitForTouchRelease();  // Wait for finger lift
+                lastIconTap = millis();
+                return;
             }
         }
     }
@@ -2833,7 +2812,7 @@ static bool afInitAttackMode(uint8_t targetChannel) {
         ap_config.ap.beacon_interval = 60000;
         esp_wifi_set_config(WIFI_IF_AP, &ap_config);
 
-        esp_wifi_set_max_tx_power(82);
+        wh_wifi_apply_max_tx_power("AuthFloodTX");
         esp_wifi_set_ps(WIFI_PS_NONE);
 
         // Let AP interface fully come up
@@ -2991,10 +2970,11 @@ static void stopAfTask() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 static void drawAfIconBar() {
-    tft.drawLine(0, ICON_BAR_TOP, SCREEN_WIDTH, ICON_BAR_TOP, WONTHOUND_MAGENTA);
-    tft.fillRect(0, ICON_BAR_Y, SCREEN_WIDTH, ICON_BAR_H, WONTHOUND_GUNMETAL);
-    tft.drawBitmap(10, ICON_BAR_Y, bitmap_icon_go_back, 16, 16, WONTHOUND_MAGENTA);
-    tft.drawBitmap(SCALE_X(210), ICON_BAR_Y, bitmap_icon_undo, 16, 16, WONTHOUND_MAGENTA);
+    // Resistive-friendly top control bar: dedicated Back + single Rescan action.
+    whDrawBackButton();
+    WhRect afActions[1];
+    whTopBarActions(1, afActions);
+    whTopBtn(afActions[0], "RESCAN", WH_OUTLINE);
     tft.drawLine(0, ICON_BAR_BOTTOM, SCREEN_WIDTH, ICON_BAR_BOTTOM, WONTHOUND_HOTPINK);
 }
 
@@ -3331,15 +3311,15 @@ static void updateAttackDisplay() {
 static void afScanNetworks() {
     if (inAttackMode) afExitAttackMode();
 
-    WiFi.mode(WIFI_STA);
-    delay(100);
+    wh_wifi_prepare_sta_scan();
 
     tft.fillRect(0, SCALE_Y(63), SCREEN_WIDTH, SCREEN_HEIGHT - SCALE_Y(63), WONTHOUND_BLACK);
     tft.setTextColor(WONTHOUND_MAGENTA);
     tft.setCursor(10, 100);
     tft.print("[*] Scanning for networks...");
 
-    int n = WiFi.scanNetworks(false, true);
+    int n = wh_wifi_scan_networks(true, 300, 0, false);
+    Serial.printf("[AUTHFLOOD] WiFi scan found %d networks\n", n);
 
     if (afApList) { free(afApList); afApList = nullptr; }
     afNetworkCount = n;
@@ -3420,35 +3400,36 @@ void loop() {
     if (now - lastTap > 200) {
         uint16_t tx, ty;
         if (getTouchPoint(&tx, &ty)) {
-            if (ty >= ICON_BAR_Y && ty <= ICON_BAR_BOTTOM) {
-                if (tx < 40) {  // Back — go to scan screen first, then exit
-                    if (attackRunning) {
-                        stopAfTask();  // Kill Core 0 task first
-                        attackRunning = false;
-                        afExitAttackMode();
-                    }
-                    if (targetSelected) {
-                        targetSelected = false;
-                        lastStateChange = now;
-                        afScanNetworks();
-                    } else {
-                        exitRequested = true;
-                    }
-                    lastTap = now;
-                    return;
+            WhRect afActions[1];
+            whTopBarActions(1, afActions);
+            // Dedicated Back button — go to scan screen first, then exit.
+            if (whHit(tx, ty, whBackButtonRect())) {
+                if (attackRunning) {
+                    stopAfTask();  // Kill Core 0 task first
+                    attackRunning = false;
+                    afExitAttackMode();
                 }
-                if (tx >= SCALE_X(200)) {  // Rescan
-                    if (attackRunning) {
-                        stopAfTask();  // Kill Core 0 task first
-                        attackRunning = false;
-                        afExitAttackMode();
-                    }
+                if (targetSelected) {
                     targetSelected = false;
                     lastStateChange = now;
                     afScanNetworks();
-                    lastTap = now;
-                    return;
+                } else {
+                    exitRequested = true;
                 }
+                lastTap = now;
+                return;
+            }
+            if (whHit(tx, ty, afActions[0])) {  // Rescan
+                if (attackRunning) {
+                    stopAfTask();  // Kill Core 0 task first
+                    attackRunning = false;
+                    afExitAttackMode();
+                }
+                targetSelected = false;
+                lastStateChange = now;
+                afScanNetworks();
+                lastTap = now;
+                return;
             }
 
             // Touch the START/STOP button area
@@ -3974,61 +3955,22 @@ static void IRAM_ATTR snifferCallback(void* buf, wifi_promiscuous_pkt_type_t typ
 // ═══════════════════════════════════════════════════════════════════════════
 
 static void drawProbeUI() {
-#define PR_ICON_SIZE 16
-    int iconY = 0;
+    // Resistive-friendly top control bar: dedicated Back + Filter / CLR / Power.
+    whDrawBackButton();
+    WhRect prActions[3];
+    whTopBarActions(3, prActions);
 
-    // Icon bar background — starts at top (no status bar)
-    tft.fillRect(0, 0, SCREEN_WIDTH, 16, WONTHOUND_DARK);
-
-    // Back icon - cyan
-    tft.drawBitmap(10, iconY, bitmap_icon_go_back, PR_ICON_SIZE, PR_ICON_SIZE, 0x07FF);
-
-    // Status text - shows "PROBE" when sniffing, "PAUSED" when not
-    tft.setTextSize(1);
-    tft.setCursor(35, iconY + 4);
-    if (sniffing) {
-        tft.setTextColor(0x07FF, WONTHOUND_DARK);  // Cyan when active
-        tft.print("PRB");
-        tft.print(currentChannel);
-    } else {
-        tft.setTextColor(0xF81F, WONTHOUND_DARK);  // Pink when paused
-        tft.print("PAUSE");
-    }
-
-    // Filter button - shows current filter mode
-    tft.setCursor(SCALE_X(90), iconY + 4);
+    // Filter action — label reflects the current filter mode.
+    const char* filterLabel = "ALL";
     switch (currentFilter) {
-        case FILTER_ALL:
-            tft.setTextColor(0x07FF, WONTHOUND_DARK);
-            tft.print("ALL");
-            break;
-        case FILTER_SSID:
-            tft.setTextColor(0xFFE0, WONTHOUND_DARK);  // Yellow
-            tft.print("SSID");
-            break;
-        case FILTER_NEW:
-            tft.setTextColor(0xF81F, WONTHOUND_DARK);  // Pink
-            tft.print("NEW");
-            break;
+        case FILTER_ALL:  filterLabel = "ALL";  break;
+        case FILTER_SSID: filterLabel = "SSID"; break;
+        case FILTER_NEW:  filterLabel = "NEW";  break;
     }
-
-    // STAR icon for saved targets count
-    tft.setCursor(SCALE_X(130), iconY + 4);
-    tft.setTextColor(0xFFE0, WONTHOUND_DARK);  // Yellow
-    tft.print("*");
-    tft.print(getSavedTargetCount());
-
-    // CLR button
-    tft.setCursor(SCALE_X(160), iconY + 4);
-    tft.setTextColor(0x07FF, WONTHOUND_DARK);
-    tft.print("CLR");
-
-    // Power icon - pink=stopped, cyan=running
-    uint16_t powerColor = sniffing ? 0x07FF : 0xF81F;
-    tft.drawBitmap(SCALE_X(210), iconY, bitmap_icon_power, PR_ICON_SIZE, PR_ICON_SIZE, powerColor);
-
-    // Separator line - hot pink
-    tft.drawLine(0, 16, SCREEN_WIDTH, 16, 0xF81F);
+    whTopBtn(prActions[0], filterLabel, WH_ACCENT);
+    whTopBtn(prActions[1], "CLR", WH_OUTLINE);
+    // Power toggle — solid pink while sniffing.
+    whTopBtn(prActions[2], sniffing ? "STOP" : "SNIFF", sniffing ? WH_ON : WH_ACCENT);
 }
 
 // Glitch title — below icon bar (separator at y=16)
@@ -4119,7 +4061,7 @@ void setup() {
     newProbeReady = false;
     sniffing = true;
     exitRequested = false;
-    currentChannel = 1;
+    currentChannel = wh_wifi_channel_at(0);
     currentFilter = FILTER_ALL;
     popupActive = false;
     popupIndex = -1;
@@ -4145,6 +4087,7 @@ void setup() {
     // ALWAYS set up promiscuous mode (other modules may have disabled it)
     WiFi.mode(WIFI_STA);
     WiFi.disconnect();
+    wh_wifi_prepare_channel((uint8_t)currentChannel);
     esp_wifi_set_promiscuous(true);
     esp_wifi_set_promiscuous_rx_cb(snifferCallback);
     esp_wifi_set_channel(currentChannel, WIFI_SECOND_CHAN_NONE);
@@ -4173,12 +4116,14 @@ void loop() {
             return;
         }
 
-        // Icon bar area (y=0-18) — icons drawn at y=0, separator at y=16
-        if (ty >= 0 && ty <= 18) {
-            waitForTouchRelease();  // Wait for release
+        // Top control-bar area (y0..WH_TOPBAR_H)
+        {
+            WhRect prActions[3];
+            whTopBarActions(3, prActions);
 
-            // Back icon at x=5-35
-            if (tx >= 5 && tx <= 35) {
+            // Dedicated Back button — pause first if sniffing, else exit.
+            if (whHit(tx, ty, whBackButtonRect())) {
+                waitForTouchRelease();  // Wait for release
                 if (sniffing) {
                     sniffing = false;
                     addProbeToLog("---", "PAUSED - tap back to exit", false);
@@ -4189,9 +4134,9 @@ void loop() {
                 }
                 return;
             }
-            // Filter button
-            else if (tx >= SCALE_X(85) && tx <= SCALE_X(120)) {
-                // Cycle filter mode
+            // Filter action — cycle filter mode
+            else if (whHit(tx, ty, prActions[0])) {
+                waitForTouchRelease();  // Wait for release
                 if (currentFilter == FILTER_ALL) {
                     currentFilter = FILTER_SSID;
                 } else if (currentFilter == FILTER_SSID) {
@@ -4203,8 +4148,9 @@ void loop() {
                 drawProbeLog();
                 return;
             }
-            // CLR button area
-            else if (tx >= SCALE_X(155) && tx <= SCALE_X(185)) {
+            // CLR action
+            else if (whHit(tx, ty, prActions[1])) {
+                waitForTouchRelease();  // Wait for release
                 deviceCount = 0;
                 ssidCount = 0;
                 probeLogIndex = 0;
@@ -4217,8 +4163,9 @@ void loop() {
                 drawProbeLog();
                 return;
             }
-            // Power/Stop icon at right edge
-            else if (tx >= (tft.width() - 35) && tx <= tft.width()) {
+            // Power/Stop action
+            else if (whHit(tx, ty, prActions[2])) {
+                waitForTouchRelease();  // Wait for release
                 sniffing = !sniffing;
                 if (sniffing) {
                     addProbeToLog("---", "RESUMED", false);
@@ -4322,7 +4269,7 @@ void loop() {
     // ═══════════════════════════════════════════════════════════════════════
     static uint32_t lastChannelHop = 0;
     if (sniffing && millis() - lastChannelHop > 300) {
-        currentChannel = (currentChannel % 13) + 1;
+        currentChannel = wh_next_wifi_channel((uint8_t)currentChannel, 1);
         esp_wifi_set_channel(currentChannel, WIFI_SECOND_CHAN_NONE);
         lastChannelHop = millis();
 
@@ -4679,71 +4626,35 @@ static bool handleAttackPopupTouch(uint16_t tx, uint16_t ty) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 static void drawWifiScanUI() {
-#define WS_ICON_SIZE 16
-    int iconY = ICON_BAR_Y;
+    // Resistive-friendly top control bar: dedicated Back + Sort/Filter/Wardrive/Rescan.
+    whDrawBackButton();
+    WhRect wsActions[4];
+    whTopBarActions(4, wsActions);
 
-    // Icon bar background
-    tft.fillRect(0, ICON_BAR_Y, SCREEN_WIDTH, ICON_BAR_H, WONTHOUND_DARK);
-
-    // Back icon
-    tft.drawBitmap(10, iconY, bitmap_icon_go_back, WS_ICON_SIZE, WS_ICON_SIZE, WONTHOUND_MAGENTA);
-
-    // Sort button - show current sort mode
-    tft.setTextSize(1);
-    tft.setCursor(SCALE_X(40), iconY + 4);
+    // Sort action — label reflects current sort mode.
+    const char* sortLabel = "SIG";
     switch (currentSort) {
-        case SORT_RSSI:
-            tft.setTextColor(0x07E0, WONTHOUND_DARK);  // Green
-            tft.print("SIG");
-            break;
-        case SORT_CHANNEL:
-            tft.setTextColor(0xFFE0, WONTHOUND_DARK);  // Yellow
-            tft.print("CH");
-            break;
-        case SORT_ENC:
-            tft.setTextColor(WONTHOUND_HOTPINK, WONTHOUND_DARK);
-            tft.print("ENC");
-            break;
-        case SORT_ALPHA:
-            tft.setTextColor(WONTHOUND_MAGENTA, WONTHOUND_DARK);
-            tft.print("A-Z");
-            break;
+        case SORT_RSSI:    sortLabel = "SIG"; break;
+        case SORT_CHANNEL: sortLabel = "CH";  break;
+        case SORT_ENC:     sortLabel = "ENC"; break;
+        case SORT_ALPHA:   sortLabel = "A-Z"; break;
     }
+    whTopBtn(wsActions[0], sortLabel, WH_ACCENT);
 
-    // Filter button - show current filter
-    tft.setCursor(SCALE_X(80), iconY + 4);
+    // Filter action — label reflects current filter mode.
+    const char* filtLabel = "ALL";
     switch (currentFilter) {
-        case FILT_ALL:
-            tft.setTextColor(WONTHOUND_MAGENTA, WONTHOUND_DARK);
-            tft.print("ALL");
-            break;
-        case FILT_OPEN:
-            tft.setTextColor(0x07E0, WONTHOUND_DARK);  // Green = OPEN (danger!)
-            tft.print("OPN");
-            break;
-        case FILT_WEP:
-            tft.setTextColor(0xFD20, WONTHOUND_DARK);  // Orange
-            tft.print("WEP");
-            break;
-        case FILT_WPA:
-            tft.setTextColor(WONTHOUND_HOTPINK, WONTHOUND_DARK);
-            tft.print("WPA");
-            break;
+        case FILT_ALL:  filtLabel = "ALL"; break;
+        case FILT_OPEN: filtLabel = "OPN"; break;
+        case FILT_WEP:  filtLabel = "WEP"; break;
+        case FILT_WPA:  filtLabel = "WPA"; break;
     }
+    whTopBtn(wsActions[1], filtLabel, WH_ACCENT);
 
-    // Network count
-    tft.setCursor(SCALE_X(120), iconY + 4);
-    tft.setTextColor(WONTHOUND_BRIGHT, WONTHOUND_DARK);
-    tft.print(filteredCount);
-    tft.print("/");
-    tft.print(networkCount);
-
-    // Wardriving toggle
-    uint16_t wdColor = wardrivingEnabled ? WONTHOUND_HOTPINK : WONTHOUND_GUNMETAL;
-    tft.drawBitmap(SCALE_X(170), iconY, bitmap_icon_antenna, WS_ICON_SIZE, WS_ICON_SIZE, wdColor);
-
-    // Rescan icon - skull_tools for style!
-    tft.drawBitmap(SCALE_X(200), iconY, bitmap_icon_skull_tools, WS_ICON_SIZE, WS_ICON_SIZE, WONTHOUND_MAGENTA);
+    // Wardriving toggle — solid pink while logging.
+    whTopBtn(wsActions[2], "WDRV", wardrivingEnabled ? WH_ON : WH_ACCENT);
+    // Rescan action.
+    whTopBtn(wsActions[3], "SCAN", WH_OUTLINE);
 
     // Separator line
     tft.drawLine(0, ICON_BAR_BOTTOM, SCREEN_WIDTH, ICON_BAR_BOTTOM, WONTHOUND_HOTPINK);
@@ -4759,8 +4670,6 @@ static void drawList() {
     tft.fillRect(0, CONTENT_Y_START, SCREEN_WIDTH, SCREEN_HEIGHT - CONTENT_Y_START, WONTHOUND_BLACK);
     drawWifiScanUI();
     drawHeader();
-
-    networkCount = WiFi.scanComplete();
 
     if (networkCount <= 0) {
         tft.setTextColor(WONTHOUND_MAGENTA);
@@ -4966,15 +4875,11 @@ void startScan() {
     showScanning();
     isScanning = true;
 
-    // Force clean WiFi state — previous module may have used raw esp_wifi_stop()
-    // which desyncs Arduino's _esp_wifi_started flag. WiFi.mode(WIFI_OFF) resets it.
-    WiFi.mode(WIFI_OFF);
-    delay(50);
-
-    WiFi.mode(WIFI_STA);
-    WiFi.disconnect();
-
-    int n = WiFi.scanNetworks(false, true);
+    // Rebuild the S3 STA event lifecycle before every scan. Raw monitor/attack
+    // modules use ESP-IDF directly, while scan results belong to Arduino's
+    // WIFI_EVENT_SCAN_DONE handler.
+    int n = wh_wifi_scan_networks(true, 300, 0, true);
+    Serial.printf("[WIFISCAN] scan result=%d\n", n);
     networkCount = n;
     currentIndex = 0;
     listStartIndex = 0;
@@ -5057,69 +4962,76 @@ void loop() {
     if (millis() - lastIconTap > 200) {
         uint16_t tx, ty;
         if (getTouchPoint(&tx, &ty)) {
-            // Icon bar area
-            if (ty >= (ICON_BAR_Y - 2) && ty <= (ICON_BAR_BOTTOM + 4)) {
+            WhRect wsActions[4];
+            whTopBarActions(4, wsActions);
+
+            // Dedicated Back button — leave detail view first, else exit.
+            if (whHit(tx, ty, whBackButtonRect())) {
                 waitForTouchRelease();
                 lastIconTap = millis();
-
-                // Back icon (x=5-30)
-                if (tx >= 5 && tx <= 30) {
-                    if (detailView) {
-                        detailView = false;
-                        drawList();
-                    } else {
-                        exitRequested = true;
-                    }
-                    return;
-                }
-                // Sort button
-                else if (tx >= SCALE_X(35) && tx <= SCALE_X(70)) {
-                    currentSort = (SortMode)((currentSort + 1) % 4);
-                    sortAndFilterNetworks();
-                    currentIndex = 0;
-                    listStartIndex = 0;
+                if (detailView) {
+                    detailView = false;
                     drawList();
-                    return;
+                } else {
+                    exitRequested = true;
                 }
-                // Filter button
-                else if (tx >= SCALE_X(75) && tx <= SCALE_X(115)) {
-                    currentFilter = (FilterMode)((currentFilter + 1) % 4);
-                    sortAndFilterNetworks();
-                    currentIndex = 0;
-                    listStartIndex = 0;
-                    drawList();
-                    return;
-                }
-                // Wardriving toggle
-                else if (tx >= SCALE_X(165) && tx <= SCALE_X(190)) {
-                    wardrivingEnabled = !wardrivingEnabled;
-                    if (wardrivingEnabled && !wardrivingIsActive()) {
-                        gpsSetup();
-                        if (!wardrivingStart()) {
-                            wardrivingEnabled = false;
-                            tft.fillRect(SCALE_X(30), SCALE_Y(100), SCALE_W(180), SCALE_H(50), WONTHOUND_DARK);
-                            tft.drawRect(SCALE_X(30), SCALE_Y(100), SCALE_W(180), SCALE_H(50), WONTHOUND_HOTPINK);
-                            tft.setTextColor(WONTHOUND_HOTPINK);
-                            tft.setCursor(SCALE_X(50), SCALE_Y(115));
-                            tft.print("SD CARD ERROR!");
-                            tft.setCursor(SCALE_X(40), SCALE_Y(130));
-                            tft.setTextColor(WONTHOUND_MAGENTA);
-                            tft.print("Check SD and retry");
-                            delay(2000);
-                        }
-                    } else if (!wardrivingEnabled && wardrivingIsActive()) {
-                        wardrivingStop();
+                return;
+            }
+            // Sort action
+            else if (whHit(tx, ty, wsActions[0])) {
+                waitForTouchRelease();
+                lastIconTap = millis();
+                currentSort = (SortMode)((currentSort + 1) % 4);
+                sortAndFilterNetworks();
+                currentIndex = 0;
+                listStartIndex = 0;
+                drawList();
+                return;
+            }
+            // Filter action
+            else if (whHit(tx, ty, wsActions[1])) {
+                waitForTouchRelease();
+                lastIconTap = millis();
+                currentFilter = (FilterMode)((currentFilter + 1) % 4);
+                sortAndFilterNetworks();
+                currentIndex = 0;
+                listStartIndex = 0;
+                drawList();
+                return;
+            }
+            // Wardriving toggle action
+            else if (whHit(tx, ty, wsActions[2])) {
+                waitForTouchRelease();
+                lastIconTap = millis();
+                wardrivingEnabled = !wardrivingEnabled;
+                if (wardrivingEnabled && !wardrivingIsActive()) {
+                    gpsSetup();
+                    if (!wardrivingStart()) {
+                        wardrivingEnabled = false;
+                        tft.fillRect(SCALE_X(30), SCALE_Y(100), SCALE_W(180), SCALE_H(50), WONTHOUND_DARK);
+                        tft.drawRect(SCALE_X(30), SCALE_Y(100), SCALE_W(180), SCALE_H(50), WONTHOUND_HOTPINK);
+                        tft.setTextColor(WONTHOUND_HOTPINK);
+                        tft.setCursor(SCALE_X(50), SCALE_Y(115));
+                        tft.print("SD CARD ERROR!");
+                        tft.setCursor(SCALE_X(40), SCALE_Y(130));
+                        tft.setTextColor(WONTHOUND_MAGENTA);
+                        tft.print("Check SD and retry");
+                        delay(2000);
                     }
-                    drawList();
-                    return;
+                } else if (!wardrivingEnabled && wardrivingIsActive()) {
+                    wardrivingStop();
                 }
-                // Rescan skull icon
-                else if (tx >= SCALE_X(195) && tx <= SCALE_X(220)) {
-                    if (!detailView) {
-                        startScan();
-                    }
-                    return;
+                drawList();
+                return;
+            }
+            // Rescan action
+            else if (whHit(tx, ty, wsActions[3])) {
+                waitForTouchRelease();
+                lastIconTap = millis();
+                if (!detailView) {
+                    startScan();
                 }
+                return;
             }
         }
     }
@@ -5416,13 +5328,9 @@ static uint16_t colorBuffer[TERM_MAX_LINES];
 static int lineCount = 0;
 
 // ═══════════════════════════════════════════════════════════════════════════
-// ICON BAR CONFIGURATION (6 icons)
+// TOP CONTROL BAR — now uses the shared wh_ui toolkit (whDrawBackButton +
+// whTopBarActions), so the old hand-placed 16px icon coordinates are gone.
 // ═══════════════════════════════════════════════════════════════════════════
-
-#define CP_ICON_SIZE 16
-#define CP_ICON_NUM 6
-static const int iconX[CP_ICON_NUM] = {10, SCALE_X(55), SCALE_X(100), SCALE_X(135), SCALE_X(175), SCALE_X(215)};
-static const int iconY = ICON_BAR_Y;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // FORWARD DECLARATIONS
@@ -5566,7 +5474,7 @@ static void saveCredential(const char* email, const char* password, const char* 
     spiDeselect();
     bool sdOk = SD.begin(SD_CS);
     if (!sdOk) {
-        SPI.begin(18, 19, 23, SD_CS);
+        SPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
         sdOk = SD.begin(SD_CS, SPI, 4000000);
     }
     if (sdOk) {
@@ -5607,7 +5515,7 @@ static void savePSKtoSD(const char* psk) {
     spiDeselect();
     bool sdOk = SD.begin(SD_CS);
     if (!sdOk) {
-        SPI.begin(18, 19, 23, SD_CS);
+        SPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
         sdOk = SD.begin(SD_CS, SPI, 4000000);
     }
     if (sdOk) {
@@ -5861,10 +5769,8 @@ void startPortal() {
     // Do NOT override here — respect manual selection
 
     // Quick scan for real AP — get BSSID + channel for background deauth
-    WiFi.mode(WIFI_STA);
-    WiFi.disconnect();
-    delay(100);
-    int n = WiFi.scanNetworks(false, true);
+    int n = wh_wifi_scan_networks(true, 300, 0, true);
+    Serial.printf("[PORTAL] target scan result=%d\n", n);
     hasTarget = false;
     for (int i = 0; i < n; i++) {
         if (strcasecmp(WiFi.SSID(i).c_str(), customSSID) == 0) {
@@ -5883,10 +5789,11 @@ void startPortal() {
 
     // Start evil twin — APSTA mode required for deauth frame injection
     uint8_t ch = hasTarget ? targetChannel : 1;
+    wh_wifi_prepare_ap_channel(ch);
     WiFi.mode(WIFI_AP_STA);
     WiFi.softAP(customSSID, NULL, ch);  // Open AP on target's channel
 
-    esp_wifi_set_max_tx_power(82);  // Max TX power
+    wh_wifi_apply_max_tx_power("CaptivePortal");
     esp_wifi_set_ps(WIFI_PS_NONE);  // No power save
 
     dnsServer.setErrorReplyCode(DNSReplyCode::NoError);
@@ -5988,21 +5895,17 @@ void saveSSID(const char* ssid) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 static void drawIconBar() {
-    tft.fillRect(0, ICON_BAR_Y, SCREEN_WIDTH, ICON_BAR_H, WONTHOUND_DARK);
-
-    // Back
-    tft.drawBitmap(iconX[0], iconY, bitmap_icon_go_back, CP_ICON_SIZE, CP_ICON_SIZE, WONTHOUND_MAGENTA);
-    // SSID keyboard
-    tft.drawBitmap(iconX[1], iconY, bitmap_icon_dialog, CP_ICON_SIZE, CP_ICON_SIZE, WONTHOUND_MAGENTA);
-    // Template left arrow
-    tft.drawBitmap(iconX[2], iconY, bitmap_icon_LEFT, CP_ICON_SIZE, CP_ICON_SIZE, WONTHOUND_MAGENTA);
-    // Template right arrow
-    tft.drawBitmap(iconX[3], iconY, bitmap_icon_RIGHT, CP_ICON_SIZE, CP_ICON_SIZE, WONTHOUND_MAGENTA);
-    // Start/Stop toggle (antenna = active indicator)
-    uint16_t antennaColor = portalActive ? WONTHOUND_HOTPINK : WONTHOUND_MAGENTA;
-    tft.drawBitmap(iconX[4], iconY, bitmap_icon_antenna, CP_ICON_SIZE, CP_ICON_SIZE, antennaColor);
-    // Credentials list
-    tft.drawBitmap(iconX[5], iconY, bitmap_icon_list, CP_ICON_SIZE, CP_ICON_SIZE, WONTHOUND_MAGENTA);
+    // Resistive-friendly top control bar: dedicated Back + 5 actions
+    // (SSID keyboard, template prev/next, start/stop toggle, cred list).
+    whDrawBackButton();
+    WhRect cpActions[5];
+    whTopBarActions(5, cpActions);
+    whTopBtn(cpActions[0], "KBD", WH_OUTLINE);
+    whTopBtn(cpActions[1], "<", WH_OUTLINE);
+    whTopBtn(cpActions[2], ">", WH_OUTLINE);
+    // Start/Stop toggle — solid pink while the portal is live.
+    whTopBtn(cpActions[3], portalActive ? "STOP" : "GO", portalActive ? WH_ON : WH_ACCENT);
+    whTopBtn(cpActions[4], "CREDS", WH_OUTLINE);
 
     // Separator line
     tft.drawLine(0, ICON_BAR_BOTTOM, SCREEN_WIDTH, ICON_BAR_BOTTOM, WONTHOUND_HOTPINK);
@@ -6265,10 +6168,8 @@ static void drawKeyboard() {
     // Clear content area below icon bar
     tft.fillRect(0, CONTENT_Y_START, SCREEN_WIDTH, SCREEN_HEIGHT - CONTENT_Y_START, WONTHOUND_BLACK);
 
-    // Draw icon bar (Back icon only for keyboard screen)
-    tft.fillRect(0, ICON_BAR_Y, SCREEN_WIDTH, ICON_BAR_H, WONTHOUND_DARK);
-    tft.drawBitmap(10, ICON_BAR_Y, bitmap_icon_go_back, 16, 16, WONTHOUND_MAGENTA);
-    tft.drawLine(0, ICON_BAR_BOTTOM, SCREEN_WIDTH, ICON_BAR_BOTTOM, WONTHOUND_HOTPINK);
+    // Dedicated Back button in the fixed top-left zone.
+    whDrawBackButton();
 
     // Instructions
     tft.setTextColor(WONTHOUND_HOTPINK);
@@ -6443,9 +6344,8 @@ static void handleKeyboard(int x, int y) {
 static void drawCredList() {
     tft.fillRect(0, ICON_BAR_Y, SCREEN_WIDTH, SCREEN_HEIGHT - ICON_BAR_Y, WONTHOUND_BLACK);
 
-    // Icon bar with Back
-    tft.fillRect(0, ICON_BAR_Y, SCREEN_WIDTH, ICON_BAR_H, WONTHOUND_DARK);
-    tft.drawBitmap(10, ICON_BAR_Y, bitmap_icon_go_back, 16, 16, WONTHOUND_MAGENTA);
+    // Dedicated Back button owns the fixed top-left zone.
+    whDrawBackButton();
     tft.drawLine(0, ICON_BAR_BOTTOM, SCREEN_WIDTH, ICON_BAR_BOTTOM, WONTHOUND_HOTPINK);
 
     currentScreen = SCREEN_CRED_LIST;
@@ -6568,8 +6468,8 @@ static void handleTouch() {
         int credBtnH = SCALE_H(20);
         int btnY = SCREEN_HEIGHT - SCALE_H(25);
 
-        // Back icon in icon bar
-        if (ty >= (ICON_BAR_Y - 2) && ty <= (ICON_BAR_BOTTOM + 4) && tx >= 5 && tx <= 30) {
+        // Dedicated Back button owns the fixed top-left zone.
+        if (whHit(tx, ty, whBackButtonRect())) {
             credPage = 0;
             waitForReleaseFlag = true;
             drawMainScreen();
@@ -6612,16 +6512,19 @@ static void handleTouch() {
 
     // ── Main / Active screen ──────────────────────────────────────────
 
-    // Icon bar
-    if (ty >= (ICON_BAR_Y - 2) && ty <= (ICON_BAR_BOTTOM + 4)) {
-        // Back icon (x=10)
-        if (tx >= 5 && tx <= 30) {
+    // Top control bar
+    {
+        WhRect cpActions[5];
+        whTopBarActions(5, cpActions);
+
+        // Dedicated Back button owns the fixed top-left zone.
+        if (whHit(tx, ty, whBackButtonRect())) {
             exitRequested = true;
             waitForReleaseFlag = true;
             return;
         }
-        // SSID keyboard icon
-        if (tx >= SCALE_X(45) && tx <= SCALE_X(75)) {
+        // SSID keyboard action
+        if (whHit(tx, ty, cpActions[0])) {
             if (!portalActive) {
                 inputSSID = "";
                 cursorState = false;
@@ -6631,8 +6534,8 @@ static void handleTouch() {
             }
             return;
         }
-        // Template left arrow
-        if (tx >= SCALE_X(90) && tx <= SCALE_X(120)) {
+        // Template prev action
+        if (whHit(tx, ty, cpActions[1])) {
             if (!portalActive) {
                 currentTemplate = (PortalTemplate)((currentTemplate + TMPL_COUNT - 1) % TMPL_COUNT);
                 EEPROM.write(TMPL_ADDR, (uint8_t)currentTemplate);
@@ -6644,8 +6547,8 @@ static void handleTouch() {
             }
             return;
         }
-        // Template right arrow
-        if (tx >= SCALE_X(125) && tx <= SCALE_X(155)) {
+        // Template next action
+        if (whHit(tx, ty, cpActions[2])) {
             if (!portalActive) {
                 currentTemplate = (PortalTemplate)((currentTemplate + 1) % TMPL_COUNT);
                 EEPROM.write(TMPL_ADDR, (uint8_t)currentTemplate);
@@ -6657,8 +6560,8 @@ static void handleTouch() {
             }
             return;
         }
-        // Start/Stop toggle
-        if (tx >= SCALE_X(165) && tx <= SCALE_X(195)) {
+        // Start/Stop toggle action
+        if (whHit(tx, ty, cpActions[3])) {
             if (portalActive) {
                 stopPortal();
             } else {
@@ -6667,8 +6570,8 @@ static void handleTouch() {
             waitForReleaseFlag = true;
             return;
         }
-        // Credentials list at right edge
-        if (tx >= (SCREEN_WIDTH - SCALE_X(35)) && tx <= SCREEN_WIDTH) {
+        // Credentials list action
+        if (whHit(tx, ty, cpActions[4])) {
             credPage = 0;
             waitForReleaseFlag = true;
             drawCredList();
@@ -6908,7 +6811,7 @@ namespace StationScan {
 #define ITEM_HEIGHT SCALE_H(22)
 #define STATION_TIMEOUT 60000   // 60s stale timeout
 #define CHANNEL_HOP_MS 300      // 300ms per channel
-#define MAX_CHANNEL 13
+#define MAX_CHANNEL wh_wifi_channel_count()
 
 // Forward declarations
 static void drawFullUI();
@@ -7156,7 +7059,7 @@ static void IRAM_ATTR snifferCallback(void* buf, wifi_promiscuous_pkt_type_t typ
 
 static void channelHopIfNeeded() {
     if (millis() - lastChannelHop >= CHANNEL_HOP_MS) {
-        currentChannel = (currentChannel % MAX_CHANNEL) + 1;
+        currentChannel = wh_next_wifi_channel((uint8_t)currentChannel, 1);
         esp_wifi_set_channel(currentChannel, WIFI_SECOND_CHAN_NONE);
         lastChannelHop = millis();
     }
@@ -7167,28 +7070,12 @@ static void channelHopIfNeeded() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 static void drawIconBar() {
-    // Icon bar background - WONTHOUND DARK
-    tft.fillRect(0, ICON_BAR_Y, SCREEN_WIDTH, ICON_BAR_H, WONTHOUND_DARK);
-
-    // Back icon at x=10
-    tft.drawBitmap(10, ICON_BAR_Y, bitmap_icon_go_back, 16, 16, WONTHOUND_MAGENTA);
-
-    // Title and count
-    tft.setTextColor(WONTHOUND_MAGENTA);
-    tft.setTextSize(1);
-    tft.setCursor(SCALE_X(35), ICON_BAR_Y + 4);
-    tft.print("STATIONS (");
-    tft.print(stationCount);
-    tft.print(")");
-
-    // Channel indicator
-    tft.setCursor(SCALE_X(150), ICON_BAR_Y + 4);
-    tft.print("CH:");
-    tft.print(currentChannel);
-
-    // Scan indicator (power icon)
-    uint16_t pwrColor = scanning ? WONTHOUND_HOTPINK : WONTHOUND_GUNMETAL;
-    tft.drawBitmap(SCALE_X(220), ICON_BAR_Y, bitmap_icon_led, 16, 16, pwrColor);
+    // Resistive-friendly top control bar: dedicated Back + Power (scan) toggle.
+    whDrawBackButton();
+    WhRect ssActions[1];
+    whTopBarActions(1, ssActions);
+    // Power toggle — solid pink while scanning.
+    whTopBtn(ssActions[0], scanning ? "STOP" : "SCAN", scanning ? WH_ON : WH_ACCENT);
 
     // Separator
     tft.drawLine(0, ICON_BAR_BOTTOM, SCREEN_WIDTH, ICON_BAR_BOTTOM, WONTHOUND_HOTPINK);
@@ -7519,15 +7406,17 @@ static void handleTouch() {
 
     lastTouch = millis();
 
-    // Icon bar
-    if (ty >= ICON_BAR_Y && ty <= ICON_BAR_BOTTOM) {
-        // Back icon at x=10-26
-        if (tx >= 10 && tx <= 26) {
+    // Top control bar
+    {
+        WhRect ssActions[1];
+        whTopBarActions(1, ssActions);
+        // Dedicated Back button owns the fixed top-left zone.
+        if (whHit(tx, ty, whBackButtonRect())) {
             exitRequested = true;
             return;
         }
         // Power toggle
-        if (tx >= SCALE_X(220) && tx <= SCALE_X(236)) {
+        if (whHit(tx, ty, ssActions[0])) {
             if (scanning) {
                 stopScanning();
             } else {
@@ -7624,7 +7513,7 @@ void setup() {
     stationCount = 0;
     currentIndex = 0;
     listStartIndex = 0;
-    currentChannel = 1;
+    currentChannel = wh_wifi_channel_at(0);
     lastChannelHop = millis();
     newStationReady = false;
 

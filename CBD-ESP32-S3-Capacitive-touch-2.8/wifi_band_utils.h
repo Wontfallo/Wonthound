@@ -36,6 +36,11 @@ void wh_wifi_prepare_scan_dual_band();
 void wh_wifi_prepare_channel(uint8_t channel);
 void wh_wifi_prepare_ap_channel(uint8_t channel);
 void wh_wifi_configure_dual_band();
+bool wh_wifi_prepare_sta_scan();
+int16_t wh_wifi_scan_networks(bool showHidden = true,
+                              uint32_t maxMsPerChannel = 300,
+                              uint8_t channel = 0,
+                              bool resetRadio = true);
 void wh_wifi_print_c5_runtime_report();
 esp_err_t wh_wifi_scan_dual_band_records(wifi_ap_record_t* records, uint16_t* count, bool showHidden, uint32_t maxMsPerChan);
 esp_err_t wh_esp_wifi_set_channel(uint8_t channel, wifi_second_chan_t second);

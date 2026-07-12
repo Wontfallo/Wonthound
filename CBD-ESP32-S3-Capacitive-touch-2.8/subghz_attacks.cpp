@@ -11,6 +11,7 @@
 #include "spi_manager.h"
 #include "icon.h"
 #include "skull_bg.h"
+#include "wh_ui.h"
 #include <EEPROM.h>
 #include <arduinoFFT.h>
 
@@ -103,17 +104,19 @@ static const int NUM_RC_PROTOCOLS = sizeof(rcProtocols) / sizeof(rcProtocols[0])
 
 // RMT symbol buffer for TX
 #define RMT_MAX_SYMBOLS 128
+#if WONTHOUND_SUBGHZ_USE_LEGACY_RMT
 static rmt_item32_t rmtSymbols[RMT_MAX_SYMBOLS];
-static bool rmtInitialized = false;
 
 // RMT RX for signal capture (GPIO35 doesn't work with attachInterrupt)
 #define RMT_RX_CHANNEL    RMT_CHANNEL_1
 #define RMT_RX_BUF_SIZE   2048
 #define RMT_CLK_DIV       80    // 80MHz/80 = 1MHz (1 tick = 1us)
 static RingbufHandle_t rmtRxRingBuf = NULL;
+#endif
+static bool rmtInitialized = false;
 static bool rmtRxInitialized = false;
 
-#ifdef NMRF_HAT
+#if defined(NMRF_HAT) && WONTHOUND_SUBGHZ_USE_LEGACY_RMT
 // Hat: GDO0 and GDO2 share GPIO 22 — RMT TX and RX can't run simultaneously
 static void pauseRmtRx() {
     if (rmtRxInitialized) {
@@ -535,26 +538,14 @@ static void updateDisplay() {
     tft.print(rssi);
 }
 
-// Icon bar configuration - MATCHES ORIGINAL (5 icons)
-#define RA_ICON_SIZE 16
-#define RA_ICON_NUM 5
-static int raIconX[RA_ICON_NUM] = {SCALE_X(90), SCALE_X(130), SCALE_X(170), SCALE_X(210), 10};
-static const unsigned char* raIcons[RA_ICON_NUM] = {
-    bitmap_icon_sort_up_plus,      // 0: Next freq
-    bitmap_icon_sort_down_minus,   // 1: Prev freq
-    bitmap_icon_flash,             // 2: REPLAY (transmit captured signal)
-    bitmap_icon_floppy,            // 3: Save/Profiles
-    bitmap_icon_go_back            // 4: Back
-};
-
-// Draw icon bar - MATCHES ORIGINAL WONTHOUND
+// Control bar — dedicated Back button + 4 action buttons (CH+, CH-, REPLAY, SAVE)
 static void drawReplayUI() {
-    tft.drawLine(0, ICON_BAR_TOP, SCREEN_WIDTH, ICON_BAR_TOP, WONTHOUND_MAGENTA);
-    tft.fillRect(0, ICON_BAR_Y, SCREEN_WIDTH, ICON_BAR_H, WONTHOUND_GUNMETAL);
-    for (int i = 0; i < RA_ICON_NUM; i++) {
-        tft.drawBitmap(raIconX[i], ICON_BAR_Y, raIcons[i], RA_ICON_SIZE, RA_ICON_SIZE, WONTHOUND_MAGENTA);
-    }
-    tft.drawLine(0, ICON_BAR_BOTTOM, SCREEN_WIDTH, ICON_BAR_BOTTOM, WONTHOUND_HOTPINK);
+    whDrawBackButton();
+    WhRect a[4]; whTopBarActions(4, a);
+    whTopBtn(a[0], "CH+", WH_OUTLINE);
+    whTopBtn(a[1], "CH-", WH_OUTLINE);
+    whTopBtn(a[2], "REPLAY", signalCaptured ? WH_ACCENT : WH_OUTLINE);
+    whTopBtn(a[3], "SAVE", WH_OUTLINE);
 }
 
 static void drawUI() {
@@ -621,6 +612,9 @@ static void drawSignalCaptured() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 bool initRMT() {
+#if !WONTHOUND_SUBGHZ_USE_LEGACY_RMT
+    return false;
+#else
     if (rmtInitialized) return true;
 
     rmt_config_t config = RMT_DEFAULT_CONFIG_TX((gpio_num_t)CC1101_GDO0, RMT_CHANNEL_0);
@@ -649,18 +643,22 @@ bool initRMT() {
     Serial.println("[RMT] Initialized on GPIO " + String(CC1101_GDO0));
     #endif
     return true;
+#endif
 }
 
 bool isRMTInitialized() {
     return rmtInitialized;
 }
 
+#if WONTHOUND_SUBGHZ_USE_LEGACY_RMT
 void rmtTransmit(rmt_item32_t* items, size_t numItems) {
     if (!rmtInitialized) return;
     rmt_write_items(RMT_CHANNEL_0, items, numItems, true);
     rmt_wait_tx_done(RMT_CHANNEL_0, portMAX_DELAY);
 }
+#endif
 
+#if WONTHOUND_SUBGHZ_USE_LEGACY_RMT
 static int buildRMTSymbols(int protocol, unsigned long value, int bitLength) {
     if (protocol < 1 || protocol >= NUM_RC_PROTOCOLS) {
         return 0;
@@ -699,6 +697,7 @@ static int buildRMTSymbols(int protocol, unsigned long value, int bitLength) {
 
     return idx;
 }
+#endif
 
 // ═══════════════════════════════════════════════════════════════════════════
 // RMT RX SIGNAL DECODING (replaces RCSwitch interrupt-based detection)
@@ -711,6 +710,7 @@ static bool pulseMatch(uint32_t duration, uint32_t target, uint8_t tolerance = 6
 }
 
 // Decode RMT items into signal value, returns true if valid signal found
+#if WONTHOUND_SUBGHZ_USE_LEGACY_RMT
 static bool decodeRmtSignal(rmt_item32_t* items, size_t itemCount,
                             unsigned long* outValue, int* outBitLength, int* outProtocol) {
     if (itemCount < 8) return false;  // Need at least sync + some bits
@@ -791,6 +791,7 @@ static bool decodeRmtSignal(rmt_item32_t* items, size_t itemCount,
 
     return false;
 }
+#endif
 
 // ═══════════════════════════════════════════════════════════════════════════
 // PUBLIC FUNCTIONS
@@ -859,7 +860,8 @@ void setup() {
         delay(2000);
     }
 
-    // Initialize RMT RX for signal capture (GPIO35 doesn't work with attachInterrupt)
+    // Initialize signal capture.
+#if WONTHOUND_SUBGHZ_USE_LEGACY_RMT
     // Using RMT hardware peripheral instead - captures pulses via DMA, no interrupts needed
     {
         rmt_config_t rxConfig = RMT_DEFAULT_CONFIG_RX((gpio_num_t)CC1101_GDO2, RMT_RX_CHANNEL);
@@ -885,6 +887,12 @@ void setup() {
             #endif
         }
     }
+#else
+    rcSwitch.enableReceive(CC1101_GDO2);
+    #if CYD_DEBUG
+    Serial.println("[SUBGHZ] RCSwitch RX initialized for ESP32-C5");
+    #endif
+#endif
 
     // Load profile count from EEPROM
     EEPROM.begin(EEPROM_SIZE);
@@ -929,52 +937,49 @@ void loop() {
     // Heartbeat debug
     static unsigned long lastHB = 0;
     if (millis() - lastHB > 2000) {
+#if WONTHOUND_SUBGHZ_USE_LEGACY_RMT
         Serial.printf("[HB] ReplayAttack rmtInit=%d ringBuf=%p\n", rmtRxInitialized, rmtRxRingBuf);
+#else
+        Serial.println("[HB] ReplayAttack rx=RCSwitch");
+#endif
         lastHB = millis();
     }
 
     // Update touch buttons
     touchButtonsUpdate();
 
-    // Icon bar touch handling
+    // Control bar touch handling — dedicated Back + CH+/CH-/REPLAY/SAVE
     static unsigned long lastIconTap = 0;
     if (millis() - lastIconTap > 200) {
         uint16_t tx, ty;
         if (getTouchPoint(&tx, &ty)) {
-            if (ty >= ICON_BAR_TOUCH_TOP && ty <= ICON_BAR_TOUCH_BOTTOM) {
-                for (int i = 0; i < RA_ICON_NUM; i++) {
-                    if (tx >= raIconX[i] && tx < raIconX[i] + RA_ICON_SIZE) {
-                        lastIconTap = millis();
-                        switch (i) {
-                            case 0: // Next freq
-                                if (!autoScanEnabled) { nextFrequency(); updateDisplay(); }
-                                break;
-                            case 1: // Prev freq
-                                if (!autoScanEnabled) { prevFrequency(); updateDisplay(); }
-                                break;
-                            case 2: // REPLAY signal
-                                if (signalCaptured) {
-                                    sendSignal();
-                                } else {
-                                    // Flash "NO SIGNAL" feedback
-                                    tft.fillRect(SCALE_X(60), SCALE_Y(140), SCALE_W(120), 20, WONTHOUND_HOTPINK);
-                                    tft.setTextColor(WONTHOUND_BLACK);
-                                    tft.setCursor(SCALE_X(70), SCALE_Y(144));
-                                    tft.print("NO SIGNAL");
-                                    delay(300);
-                                    tft.fillRect(SCALE_X(60), SCALE_Y(140), SCALE_W(120), 20, WONTHOUND_BLACK);
-                                }
-                                break;
-                            case 3: // Profiles/Save
-                                // TODO: Profile menu
-                                break;
-                            case 4: // Back
-                                exitRequested = true;
-                                return;
-                        }
-                        break;
-                    }
+            WhRect a[4]; whTopBarActions(4, a);
+            if (whHit(tx, ty, whBackButtonRect())) {          // Back
+                lastIconTap = millis();
+                exitRequested = true;
+                return;
+            } else if (whHit(tx, ty, a[0])) {                 // CH+ (next freq)
+                lastIconTap = millis();
+                if (!autoScanEnabled) { nextFrequency(); updateDisplay(); }
+            } else if (whHit(tx, ty, a[1])) {                 // CH- (prev freq)
+                lastIconTap = millis();
+                if (!autoScanEnabled) { prevFrequency(); updateDisplay(); }
+            } else if (whHit(tx, ty, a[2])) {                 // REPLAY signal
+                lastIconTap = millis();
+                if (signalCaptured) {
+                    sendSignal();
+                } else {
+                    // Flash "NO SIGNAL" feedback
+                    tft.fillRect(SCALE_X(60), SCALE_Y(140), SCALE_W(120), 20, WONTHOUND_HOTPINK);
+                    tft.setTextColor(WONTHOUND_BLACK);
+                    tft.setCursor(SCALE_X(70), SCALE_Y(144));
+                    tft.print("NO SIGNAL");
+                    delay(300);
+                    tft.fillRect(SCALE_X(60), SCALE_Y(140), SCALE_W(120), 20, WONTHOUND_BLACK);
                 }
+            } else if (whHit(tx, ty, a[3])) {                 // SAVE / Profiles
+                lastIconTap = millis();
+                // TODO: Profile menu
             }
         }
     }
@@ -1054,7 +1059,8 @@ void loop() {
         }
     }
 
-    // Check for received signal via RMT (hardware capture, no interrupts)
+    // Check for received signal
+#if WONTHOUND_SUBGHZ_USE_LEGACY_RMT
     if (rmtRxInitialized && rmtRxRingBuf != NULL) {
         size_t rxSize = 0;
         rmt_item32_t* items = (rmt_item32_t*)xRingbufferReceive(rmtRxRingBuf, &rxSize, pdMS_TO_TICKS(5));
@@ -1098,6 +1104,30 @@ void loop() {
             vRingbufferReturnItem(rmtRxRingBuf, (void*)items);
         }
     }
+#else
+    if (rcSwitch.available()) {
+        unsigned long newValue = rcSwitch.getReceivedValue();
+        if (newValue != 0) {
+            capturedValue = newValue;
+            capturedBitLength = rcSwitch.getReceivedBitlength();
+            capturedProtocol = rcSwitch.getReceivedProtocol();
+            signalCaptured = true;
+
+            if (autoScanEnabled) {
+                currentFreqIndex = autoScanIndex;
+            }
+
+            #if CYD_DEBUG
+            Serial.println("[SUBGHZ] Captured: " + String(capturedValue) +
+                          " (" + String(capturedBitLength) + " bits, proto " +
+                          String(capturedProtocol) + ")");
+            #endif
+
+            drawSignalCaptured();
+        }
+        rcSwitch.resetAvailable();
+    }
+#endif
 
     // FFT waterfall — Core 0 samples + computes, Core 1 draws
     drawWaterfallLine();
@@ -1112,7 +1142,8 @@ void cleanup() {
     exitRequested = true;
     stopFFTTask();
 
-    // Stop RMT RX
+    // Stop signal capture
+#if WONTHOUND_SUBGHZ_USE_LEGACY_RMT
     if (rmtRxInitialized) {
         rmt_rx_stop(RMT_RX_CHANNEL);
         rmt_driver_uninstall(RMT_RX_CHANNEL);
@@ -1125,6 +1156,10 @@ void cleanup() {
         rmt_driver_uninstall(RMT_CHANNEL_0);
         rmtInitialized = false;
     }
+#else
+    rcSwitch.disableReceive();
+    rmtRxInitialized = false;
+#endif
 
     cc1101PaSetIdle();
     spiDeselect();
@@ -1341,6 +1376,13 @@ void sendSignal(unsigned long value, int bitLength, int protocol) {
 }
 
 bool sendSignalRMT(unsigned long value, int bitLength, int protocol, int repetitions) {
+#if !WONTHOUND_SUBGHZ_USE_LEGACY_RMT
+    (void)value;
+    (void)bitLength;
+    (void)protocol;
+    (void)repetitions;
+    return false;
+#else
     if (!rmtInitialized) {
         if (!initRMT()) {
             return false;
@@ -1365,6 +1407,7 @@ bool sendSignalRMT(unsigned long value, int bitLength, int protocol, int repetit
     }
 
     return true;
+#endif
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1571,37 +1614,18 @@ static const unsigned char* sjSkulls[] = {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
-// ICON BAR - 5 icons matching WontHound style
-// ═══════════════════════════════════════════════════════════════════════════
-#define SJ_ICON_SIZE 16
-#define SJ_ICON_NUM 6
-// Layout: Back(10) | Toggle(60) | Prev(105) | Next(140) | Sweep(180) | Mode(215)
-static int sjIconX[SJ_ICON_NUM] = {10, SCALE_X(60), SCALE_X(105), SCALE_X(140), SCALE_X(180), SCALE_X(215)};
-static const unsigned char* sjIcons[SJ_ICON_NUM] = {
-    bitmap_icon_go_back,           // 0: Back
-    bitmap_icon_start,             // 1: Toggle ON/OFF
-    bitmap_icon_sort_down_minus,   // 2: Prev freq
-    bitmap_icon_sort_up_plus,      // 3: Next freq
-    bitmap_icon_antenna,           // 4: Auto sweep toggle
-    bitmap_icon_recycle            // 5: Toggle mode (Carrier/Noise)
-};
-
-// ═══════════════════════════════════════════════════════════════════════════
 // UI DRAWING FUNCTIONS
 // ═══════════════════════════════════════════════════════════════════════════
 
+// Control bar — dedicated Back button + 5 actions (JAM, CH-, CH+, SWEEP, MODE)
 static void drawIconBar() {
-    tft.drawLine(0, ICON_BAR_TOP, SCREEN_WIDTH, ICON_BAR_TOP, WONTHOUND_MAGENTA);
-    tft.fillRect(0, ICON_BAR_Y, SCREEN_WIDTH, ICON_BAR_H, WONTHOUND_GUNMETAL);
-    for (int i = 0; i < SJ_ICON_NUM; i++) {
-        uint16_t color = WONTHOUND_MAGENTA;
-        // Highlight start icon when jamming
-        if (i == 1 && jamming) color = WONTHOUND_HOTPINK;
-        // Highlight sweep icon when active
-        if (i == 3 && autoSweep) color = WONTHOUND_HOTPINK;
-        tft.drawBitmap(sjIconX[i], ICON_BAR_Y, sjIcons[i], SJ_ICON_SIZE, SJ_ICON_SIZE, color);
-    }
-    tft.drawLine(0, ICON_BAR_BOTTOM, SCREEN_WIDTH, ICON_BAR_BOTTOM, WONTHOUND_HOTPINK);
+    whDrawBackButton();
+    WhRect a[5]; whTopBarActions(5, a);
+    whTopBtn(a[0], jamming ? "STOP" : "JAM", jamming ? WH_ON : WH_ACCENT);
+    whTopBtn(a[1], "CH-", WH_OUTLINE);
+    whTopBtn(a[2], "CH+", WH_OUTLINE);
+    whTopBtn(a[3], "SWEEP", autoSweep ? WH_ON : WH_OUTLINE);
+    whTopBtn(a[4], "MODE", WH_OUTLINE);
 }
 
 static void drawHeader() {
@@ -2076,58 +2100,59 @@ void loop() {
     touchButtonsUpdate();
 
     // ═══════════════════════════════════════════════════════════════════════
-    // TOUCH HANDLING - with release detection (prevents repeat triggers)
-    // Touch zones reference sjIconX[] so they scale with screen size
+    // TOUCH HANDLING - dedicated Back + JAM/CH-/CH+/SWEEP/MODE control bar
+    // Back owns the fixed top-left zone; actions spread across the rest.
     // ═══════════════════════════════════════════════════════════════════════
     uint16_t tx, ty;
     if (getTouchPoint(&tx, &ty)) {
-        // Icon bar area
-        if (ty >= ICON_BAR_TOUCH_TOP && ty <= ICON_BAR_TOUCH_BOTTOM) {
-            // Wait for touch release to prevent repeated triggers
+        WhRect a[5]; whTopBarActions(5, a);
+        // Back button (owns fixed top-left zone)
+        if (whHit(tx, ty, whBackButtonRect())) {
             waitForTouchRelease();
-
-            // Back icon (sjIconX[0])
-            if (tx >= (sjIconX[0] - 5) && tx <= (sjIconX[0] + 20)) {
-                if (jamming) stop();
-                exitRequested = true;
-                return;
-            }
-            // Toggle/Start icon (sjIconX[1])
-            else if (tx >= (sjIconX[1] - 10) && tx <= (sjIconX[1] + 20)) {
-                toggle();
-                drawIconBar();
+            if (jamming) stop();
+            exitRequested = true;
+            return;
+        }
+        // Toggle/Start (a[0])
+        else if (whHit(tx, ty, a[0])) {
+            waitForTouchRelease();
+            toggle();
+            drawIconBar();
+            drawHeader();
+            return;
+        }
+        // Prev freq (a[1])
+        else if (whHit(tx, ty, a[1])) {
+            waitForTouchRelease();
+            if (!autoSweep) {
+                prevFrequency();
                 drawHeader();
-                return;
             }
-            // Prev freq icon (sjIconX[2])
-            else if (tx >= (sjIconX[2] - 10) && tx <= (sjIconX[2] + 20)) {
-                if (!autoSweep) {
-                    prevFrequency();
-                    drawHeader();
-                }
-                return;
-            }
-            // Next freq icon (sjIconX[3])
-            else if (tx >= (sjIconX[3] - 10) && tx <= (sjIconX[3] + 20)) {
-                if (!autoSweep) {
-                    nextFrequency();
-                    drawHeader();
-                }
-                return;
-            }
-            // Sweep icon (sjIconX[4])
-            else if (tx >= (sjIconX[4] - 10) && tx <= (sjIconX[4] + 20)) {
-                toggleAutoSweep();
-                drawIconBar();
+            return;
+        }
+        // Next freq (a[2])
+        else if (whHit(tx, ty, a[2])) {
+            waitForTouchRelease();
+            if (!autoSweep) {
+                nextFrequency();
                 drawHeader();
-                return;
             }
-            // Mode icon (sjIconX[5])
-            else if (tx >= (sjIconX[5] - 10) && tx <= (sjIconX[5] + 20)) {
-                toggleContinuousMode();
-                drawHeader();
-                return;
-            }
+            return;
+        }
+        // Sweep toggle (a[3])
+        else if (whHit(tx, ty, a[3])) {
+            waitForTouchRelease();
+            toggleAutoSweep();
+            drawIconBar();
+            drawHeader();
+            return;
+        }
+        // Mode toggle (a[4])
+        else if (whHit(tx, ty, a[4])) {
+            waitForTouchRelease();
+            toggleContinuousMode();
+            drawHeader();
+            return;
         }
     }
 
@@ -2292,27 +2317,15 @@ void cleanup() {
 
 namespace SubBrute {
 
-// ═══════════════════════════════════════════════════════════════════════════
-// ICON BAR CONFIGURATION
-// ═══════════════════════════════════════════════════════════════════════════
-#define SB_ICON_SIZE 16
-#define SB_ICON_NUM 5
-static int sbIconX[SB_ICON_NUM] = {SCALE_X(50), SCALE_X(90), SCALE_X(130), SCALE_X(170), 10};
-static const unsigned char* sbIcons[SB_ICON_NUM] = {
-    bitmap_icon_power,             // 0: Start/Stop
-    bitmap_icon_sort_down_minus,   // 1: Prev protocol
-    bitmap_icon_sort_up_plus,      // 2: Next protocol
-    bitmap_icon_random,            // 3: Toggle De Bruijn
-    bitmap_icon_go_back            // 4: Back
-};
-
+// Control bar — dedicated Back button + 4 actions (START/STOP, PREV, NEXT, DEBRJN)
+// isRunning() / isDeBruijn() are declared in subghz_attacks.h (namespace SubBrute).
 static void drawIconBar() {
-    tft.drawLine(0, ICON_BAR_TOP, SCREEN_WIDTH, ICON_BAR_TOP, WONTHOUND_MAGENTA);
-    tft.fillRect(0, ICON_BAR_Y, SCREEN_WIDTH, ICON_BAR_H, WONTHOUND_DARK);
-    for (int i = 0; i < SB_ICON_NUM; i++) {
-        tft.drawBitmap(sbIconX[i], ICON_BAR_Y, sbIcons[i], SB_ICON_SIZE, SB_ICON_SIZE, WONTHOUND_MAGENTA);
-    }
-    tft.drawLine(0, ICON_BAR_BOTTOM, SCREEN_WIDTH, ICON_BAR_BOTTOM, WONTHOUND_HOTPINK);
+    whDrawBackButton();
+    WhRect a[4]; whTopBarActions(4, a);
+    whTopBtn(a[0], isRunning() ? "STOP" : "START", isRunning() ? WH_ON : WH_ACCENT);
+    whTopBtn(a[1], "PREV", WH_OUTLINE);
+    whTopBtn(a[2], "NEXT", WH_OUTLINE);
+    whTopBtn(a[3], "DEBRJN", isDeBruijn() ? WH_ON : WH_OUTLINE);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2845,46 +2858,48 @@ void loop() {
     if (!initialized) return;
 
     // ═══════════════════════════════════════════════════════════════════════
-    // TOUCH HANDLING - Touch zones reference sbIconX[] for screen scaling
-    // sbIconX: [0]=Power, [1]=Down, [2]=Up, [3]=Random, [4]=Back
+    // TOUCH HANDLING - dedicated Back + START/STOP, PREV, NEXT, DEBRJN bar
+    // Back owns the fixed top-left zone; actions spread across the rest.
     // ═══════════════════════════════════════════════════════════════════════
     touchButtonsUpdate();
 
     uint16_t tx, ty;
     if (getTouchPoint(&tx, &ty)) {
-        // Icon bar area
-        if (ty >= ICON_BAR_TOUCH_TOP && ty <= ICON_BAR_TOUCH_BOTTOM) {
-            // Back icon (sbIconX[4])
-            if (tx >= (sbIconX[4] - 5) && tx <= (sbIconX[4] + 20)) {
-                running = false;
+        WhRect a[4]; whTopBarActions(4, a);
+        // Back button (owns fixed top-left zone)
+        if (whHit(tx, ty, whBackButtonRect())) {
+            running = false;
+            stopAttack();
+            exitRequested = true;
+            return;
+        }
+        // Start/Stop attack (a[0])
+        if (whHit(tx, ty, a[0])) {
+            if (running) {
                 stopAttack();
-                exitRequested = true;
-                return;
+            } else {
+                startAttack();
             }
-            // Power/Toggle icon (sbIconX[0])
-            if (tx >= (sbIconX[0] - 10) && tx <= (sbIconX[0] + 20)) {
-                if (running) {
-                    stopAttack();
-                } else {
-                    startAttack();
-                }
-                waitForTouchRelease();
-            }
-            // Down/Prev protocol (sbIconX[1])
-            if (tx >= (sbIconX[1] - 10) && tx <= (sbIconX[1] + 20) && !running) {
-                prevProtocol();
-                waitForTouchRelease();
-            }
-            // Up/Next protocol (sbIconX[2])
-            if (tx >= (sbIconX[2] - 10) && tx <= (sbIconX[2] + 20) && !running) {
-                nextProtocol();
-                waitForTouchRelease();
-            }
-            // Random/Toggle De Bruijn (sbIconX[3])
-            if (tx >= (sbIconX[3] - 10) && tx <= (sbIconX[3] + 20) && !running) {
-                toggleDeBruijn();
-                waitForTouchRelease();
-            }
+            drawIconBar();
+            waitForTouchRelease();
+        }
+        // Prev protocol (a[1])
+        if (whHit(tx, ty, a[1]) && !running) {
+            prevProtocol();
+            drawIconBar();
+            waitForTouchRelease();
+        }
+        // Next protocol (a[2])
+        if (whHit(tx, ty, a[2]) && !running) {
+            nextProtocol();
+            drawIconBar();
+            waitForTouchRelease();
+        }
+        // Toggle De Bruijn (a[3])
+        if (whHit(tx, ty, a[3]) && !running) {
+            toggleDeBruijn();
+            drawIconBar();
+            waitForTouchRelease();
         }
         // Center screen tap = toggle attack
         if (ty > 60 && ty < 160) {
@@ -2893,6 +2908,7 @@ void loop() {
             } else {
                 startAttack();
             }
+            drawIconBar();
             waitForTouchRelease();
         }
     }
@@ -3117,28 +3133,11 @@ void cleanup() {
 namespace SubAnalyzer {
 
 // ═══════════════════════════════════════════════════════════════════════════
-// ICON BAR — MATCHES WONTHOUND STANDARD
+// CONTROL BAR — dedicated Back button + action buttons (defined below, after
+// the `scanning` state var it reads). Forward-declared here.
 // ═══════════════════════════════════════════════════════════════════════════
 
-#define SA_ICON_SIZE 16
-#define SA_ICON_NUM 4
-static int saIconX[SA_ICON_NUM] = {SCALE_X(130), SCALE_X(170), SCALE_X(210), 10};
-static const unsigned char* saIcons[SA_ICON_NUM] = {
-    bitmap_icon_power,             // 0: Start/Stop
-    bitmap_icon_undo,              // 1: Clear/Reset
-    bitmap_icon_antenna,           // 2: (reserved)
-    bitmap_icon_go_back            // 3: Back
-};
-
-// Draw icon bar
-static void drawAnalyzerUI() {
-    tft.drawLine(0, ICON_BAR_TOP, SCREEN_WIDTH, ICON_BAR_TOP, WONTHOUND_MAGENTA);
-    tft.fillRect(0, ICON_BAR_Y, SCREEN_WIDTH, ICON_BAR_H, WONTHOUND_GUNMETAL);
-    for (int i = 0; i < SA_ICON_NUM; i++) {
-        tft.drawBitmap(saIconX[i], ICON_BAR_Y, saIcons[i], SA_ICON_SIZE, SA_ICON_SIZE, WONTHOUND_MAGENTA);
-    }
-    tft.drawLine(0, ICON_BAR_BOTTOM, SCREEN_WIDTH, ICON_BAR_BOTTOM, WONTHOUND_HOTPINK);
-}
+static void drawAnalyzerUI();
 
 // ═══════════════════════════════════════════════════════════════════════════
 // FREQUENCY LIST — 33 SubGHz channels across CC1101 bands
@@ -3235,6 +3234,14 @@ static bool initialized = false;
 static volatile bool exitRequested = false;
 static volatile bool scanning = true;
 static unsigned long lastStatusDraw = 0;
+
+// Control bar — dedicated Back button + 2 actions (SCAN/STOP, CLEAR)
+static void drawAnalyzerUI() {
+    whDrawBackButton();
+    WhRect a[2]; whTopBarActions(2, a);
+    whTopBtn(a[0], scanning ? "STOP" : "SCAN", scanning ? WH_ON : WH_ACCENT);
+    whTopBtn(a[1], "CLEAR", WH_OUTLINE);
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // DUAL-CORE ENGINE — Core 0 does CC1101 scanning, Core 1 draws
@@ -3717,40 +3724,32 @@ void loop() {
     // Update touch
     touchButtonsUpdate();
 
-    // Icon bar touch handling
+    // Control bar touch handling — dedicated Back + SCAN/STOP, CLEAR
     static unsigned long lastIconTap = 0;
     if (millis() - lastIconTap > 200) {
         uint16_t tx, ty;
         if (getTouchPoint(&tx, &ty)) {
-            if (ty >= ICON_BAR_TOUCH_TOP && ty <= ICON_BAR_TOUCH_BOTTOM) {
-                for (int i = 0; i < SA_ICON_NUM; i++) {
-                    if (tx >= saIconX[i] && tx < saIconX[i] + SA_ICON_SIZE) {
-                        lastIconTap = millis();
-                        switch (i) {
-                            case 0:  // Start/Stop scanning
-                                if (scanning) stopScan();
-                                else startScan();
-                                break;
-                            case 1:  // Clear / reset display
-                                memset(peakLevels, 0, sizeof(peakLevels));
-                                memset(rssiLevels, 0, sizeof(rssiLevels));
-                                memset(peakHoldSeg, 0, sizeof(peakHoldSeg));
-                                memset(peakHoldTime, 0, sizeof(peakHoldTime));
-                                memset(prevBarSegs, 0, sizeof(prevBarSegs));
-                                prevLineValid = false;
-                                tft.fillRect(WF_X, WF_Y, WF_WIDTH, WF_HEIGHT, TFT_BLACK);
-                                tft.fillRect(0, LG_Y, SCREEN_WIDTH, LG_HEIGHT, TFT_BLACK);
-                                drawStaticElements();
-                                break;
-                            case 2:  // Reserved
-                                break;
-                            case 3:  // Back / exit
-                                exitRequested = true;
-                                return;
-                        }
-                        break;
-                    }
-                }
+            WhRect a[2]; whTopBarActions(2, a);
+            if (whHit(tx, ty, whBackButtonRect())) {          // Back / exit
+                lastIconTap = millis();
+                exitRequested = true;
+                return;
+            } else if (whHit(tx, ty, a[0])) {                 // Start/Stop scanning
+                lastIconTap = millis();
+                if (scanning) stopScan();
+                else startScan();
+                drawAnalyzerUI();
+            } else if (whHit(tx, ty, a[1])) {                 // Clear / reset display
+                lastIconTap = millis();
+                memset(peakLevels, 0, sizeof(peakLevels));
+                memset(rssiLevels, 0, sizeof(rssiLevels));
+                memset(peakHoldSeg, 0, sizeof(peakHoldSeg));
+                memset(peakHoldTime, 0, sizeof(peakHoldTime));
+                memset(prevBarSegs, 0, sizeof(prevBarSegs));
+                prevLineValid = false;
+                tft.fillRect(WF_X, WF_Y, WF_WIDTH, WF_HEIGHT, TFT_BLACK);
+                tft.fillRect(0, LG_Y, SCREEN_WIDTH, LG_HEIGHT, TFT_BLACK);
+                drawStaticElements();
             }
         }
     }

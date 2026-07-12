@@ -17,6 +17,7 @@
 #include "touch_buttons.h"
 #include "icon.h"
 #include "utils.h"
+#include "wh_ui.h"
 #include "nosifer_font.h"
 
 extern TFT_eSPI tft;
@@ -149,16 +150,11 @@ static void drawGradientBar(int x, int y, int w, int h, int fillW) {
     }
 }
 
-// Standard icon bar — matches ALL other WontHound modules (GUNMETAL bg)
+// Standard header — big "< Back" pill + centered title (shared wh_ui toolkit).
+// Upgraded from the legacy 16px icon bar; the band ends at y34 (above the old
+// ICON_BAR_BOTTOM=36) so every RFID screen's content below is unaffected.
 static void drawRFIDIconBar(const char* title) {
-    tft.drawLine(0, ICON_BAR_TOP, SCREEN_WIDTH, ICON_BAR_TOP, WONTHOUND_MAGENTA);
-    tft.fillRect(0, ICON_BAR_Y, SCREEN_WIDTH, ICON_BAR_H, WONTHOUND_GUNMETAL);
-    tft.drawBitmap(10, ICON_BAR_Y, bitmap_icon_go_back, 16, 16, WONTHOUND_MAGENTA);
-    tft.setTextSize(TEXT_SIZE_BODY);
-    tft.setTextColor(WONTHOUND_MAGENTA, WONTHOUND_GUNMETAL);
-    tft.setCursor(30, ICON_BAR_Y + 2);
-    tft.print(title);
-    tft.drawLine(0, ICON_BAR_BOTTOM, SCREEN_WIDTH, ICON_BAR_BOTTOM, WONTHOUND_HOTPINK);
+    whDrawHeaderBand(title);
 }
 
 // Nosifer glitch title — 3-pass chromatic aberration (magenta/hotpink/white)
@@ -371,7 +367,7 @@ void pn532Cleanup() {
     pn532_detected = false;
 
     // Re-init hardware SPI for other radios (NRF24/CC1101)
-    // Software SPI bit-banged GPIO 18/19/23 — need to reclaim for hardware SPI
+    // Software SPI bit-banged on the configured radio pins; reclaim hardware SPI.
     SPI.begin(RADIO_SPI_SCK, RADIO_SPI_MISO, RADIO_SPI_MOSI);
 }
 
@@ -439,9 +435,11 @@ void setup() {
         drawCenteredRFID(y, "Check wiring:", WONTHOUND_MAGENTA);
         y += 16;
         tft.setTextColor(WONTHOUND_GUNMETAL, TFT_BLACK);
-        tft.setCursor(15, y); tft.print("SCK=18  MOSI=23  MISO=19");
+        tft.setCursor(15, y);
+        tft.printf("SCK=%d  MOSI=%d  MISO=%d", PN532_SCK, PN532_MOSI, PN532_MISO);
         y += 14;
-        tft.setCursor(15, y); tft.print("SS=17   VCC=3.3V  GND=GND");
+        tft.setCursor(15, y);
+        tft.printf("SS=%d   VCC=3.3V  GND=GND", PN532_CS);
         y += 14;
         tft.setCursor(15, y); tft.print("DIP: CH1=OFF  CH2=ON (SPI)");
         y += 22;
@@ -695,7 +693,7 @@ static void saveDumpToSD() {
     // Create /rfid/ directory if needed
     bool sdOk = SD.begin(SD_CS);
     if (!sdOk) {
-        SPI.begin(18, 19, 23, SD_CS);
+        SPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
         sdOk = SD.begin(SD_CS, SPI, 4000000);
     }
     if (!sdOk) return;
@@ -1489,7 +1487,7 @@ static void saveKeysToSD() {
 
     bool sdOk = SD.begin(SD_CS);
     if (!sdOk) {
-        SPI.begin(18, 19, 23, SD_CS);
+        SPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
         sdOk = SD.begin(SD_CS, SPI, 4000000);
     }
     if (!sdOk) return;

@@ -76,6 +76,10 @@ void cleanup();
 // Set initial spam mode before setup() (used by SourApple redirect)
 void setInitialMode(int mode);
 
+// DIAGNOSTIC: init BLE + spam CHAOS forever with no UI/touch. Never returns.
+// Used by the WH_BLE_SELFTEST build to verify RF autonomously (no button presses).
+void selfTestSpam();
+
 }  // namespace BleSpoofer
 
 // ═══════════════════════════════════════════════════════════════════════════

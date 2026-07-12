@@ -15,6 +15,7 @@
 #include "utils.h"
 #include "icon.h"
 #include "nosifer_font.h"
+#include "wh_ui.h"
 #include <TFT_eSPI.h>
 #include "storage.h"
 #include <SPI.h>
@@ -129,6 +130,14 @@ static void drawSCIconBar() {
     tft.drawLine(0, ICON_BAR_BOTTOM, tft.width(), ICON_BAR_BOTTOM, WONTHOUND_HOTPINK);
 }
 
+// Shared big "< Back" pill header (band occupies y0..34) for the Back-only
+// screens (LIST / EMPTY / VIEW). Replaces the drawStatusBar()+drawSCIconBar()
+// pair — the band draws its own back pill + live GPS chip. Title is left null
+// because each of those screens draws its own prominent glitch title below y36.
+static void drawSCHeaderBand() {
+    whDrawHeaderBand(nullptr);
+}
+
 static bool isSCBackTapped() {
     if (isBackButtonTapped()) {
         delay(150);
@@ -148,7 +157,7 @@ static bool mountSD() {
     if (SD.begin(SD_CS)) return true;
 
     // Retry with explicit SPI
-    SPI.begin(18, 19, 23, SD_CS);
+    SPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
     if (SD.begin(SD_CS, SPI, 4000000)) return true;
 
     return false;
@@ -607,8 +616,7 @@ static void dumpToSerial(int idx) {
 
 static void drawListHeader() {
     tft.fillScreen(TFT_BLACK);
-    drawStatusBar();
-    drawSCIconBar();
+    drawSCHeaderBand();   // big "< Back" pill + live GPS chip (y0..34)
     drawGlitchText(55, "CAPTURES", &Nosifer_Regular10pt7b);
     tft.drawLine(0, 58, tft.width(), 58, WONTHOUND_HOTPINK);
 
@@ -708,8 +716,7 @@ static void drawFileList() {
 
 static void drawEmptyScreen() {
     tft.fillScreen(TFT_BLACK);
-    drawStatusBar();
-    drawSCIconBar();
+    drawSCHeaderBand();   // big "< Back" pill + live GPS chip (y0..34)
     drawGlitchText(55, "CAPTURES", &Nosifer_Regular10pt7b);
     tft.drawLine(0, 58, tft.width(), 58, WONTHOUND_HOTPINK);
 
@@ -857,8 +864,7 @@ static void drawViewScreen() {
     if (selectedIndex < 0 || selectedIndex >= fileCount) return;
 
     tft.fillScreen(TFT_BLACK);
-    drawStatusBar();
-    drawSCIconBar();
+    drawSCHeaderBand();   // big "< Back" pill + live GPS chip (y0..34)
 
     // Title
     drawGlitchTitle(75, "HASH DETAIL");

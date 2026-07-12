@@ -16,6 +16,7 @@
 #include "icon.h"
 #include "nrf24_config.h"
 #include "gps_module.h"
+#include "wh_ui.h"
 #include <SPI.h>
 #include <TFT_eSPI.h>
 #include <RF24.h>
@@ -1047,7 +1048,7 @@ static void showWiringScreen() {
 static void drawMainScreen() {
     tft.fillScreen(TFT_BLACK);
     drawStatusBar();
-    drawInoIconBar();
+    whDrawHeaderBand("RADIO TEST");   // big "< Back" pill + centered title + GPS chip
     drawGlitchTitle(SCALE_Y(60), "RADIO TEST");
 
     // NRF24 button and status

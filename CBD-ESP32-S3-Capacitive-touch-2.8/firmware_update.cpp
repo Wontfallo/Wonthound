@@ -13,6 +13,7 @@
 #include "cyd_config.h"
 #include "spi_manager.h"
 #include "storage.h"
+#include "wh_ui.h"
 #include <SPI.h>
 #include <Update.h>
 
@@ -55,7 +56,7 @@ static bool initSDCard() {
 
     if (!SD.begin(SD_CS)) {
         Serial.println("[FW_UPDATE] SD.begin(CS) failed, trying explicit SPI...");
-        SPI.begin(18, 19, 23, SD_CS);
+        SPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
         if (!SD.begin(SD_CS, SPI, 4000000)) {
             Serial.println("[FW_UPDATE] SD card init failed!");
             return false;
@@ -248,11 +249,8 @@ static void drawFileSelectScreen() {
     tft.fillScreen(TFT_BLACK);
     drawStatusBar();
 
-    // Icon bar - back only
-    tft.drawLine(0, ICON_BAR_TOP, SCREEN_WIDTH, ICON_BAR_TOP, WONTHOUND_MAGENTA);
-    tft.fillRect(0, ICON_BAR_Y, SCREEN_WIDTH, ICON_BAR_H, WONTHOUND_DARK);
-    tft.drawBitmap(10, ICON_BAR_Y, bitmap_icon_go_back, ICON_SIZE, ICON_SIZE, WONTHOUND_MAGENTA);
-    tft.drawLine(0, ICON_BAR_BOTTOM, SCREEN_WIDTH, ICON_BAR_BOTTOM, WONTHOUND_HOTPINK);
+    // Header band - big "< Back" pill + centered title + GPS chip
+    whDrawHeaderBand("UPDATE FW");
 
     // Glitch title
     drawGlitchTitle(SCALE_Y(48), "UPDATE FW");
@@ -593,11 +591,8 @@ static void drawErrorScreen(const char* msg) {
     tft.fillScreen(TFT_BLACK);
     drawStatusBar();
 
-    // Icon bar with back
-    tft.drawLine(0, ICON_BAR_TOP, SCREEN_WIDTH, ICON_BAR_TOP, WONTHOUND_MAGENTA);
-    tft.fillRect(0, ICON_BAR_Y, SCREEN_WIDTH, ICON_BAR_H, WONTHOUND_DARK);
-    tft.drawBitmap(10, ICON_BAR_Y, bitmap_icon_go_back, ICON_SIZE, ICON_SIZE, WONTHOUND_MAGENTA);
-    tft.drawLine(0, ICON_BAR_BOTTOM, SCREEN_WIDTH, ICON_BAR_BOTTOM, WONTHOUND_HOTPINK);
+    // Header band - big "< Back" pill + centered title + GPS chip
+    whDrawHeaderBand("ERROR");
 
     drawGlitchTitle(SCALE_Y(48), "ERROR");
 
@@ -657,10 +652,8 @@ static void drawNoSDScreen() {
     tft.fillScreen(TFT_BLACK);
     drawStatusBar();
 
-    tft.drawLine(0, ICON_BAR_TOP, SCREEN_WIDTH, ICON_BAR_TOP, WONTHOUND_MAGENTA);
-    tft.fillRect(0, ICON_BAR_Y, SCREEN_WIDTH, ICON_BAR_H, WONTHOUND_DARK);
-    tft.drawBitmap(10, ICON_BAR_Y, bitmap_icon_go_back, ICON_SIZE, ICON_SIZE, WONTHOUND_MAGENTA);
-    tft.drawLine(0, ICON_BAR_BOTTOM, SCREEN_WIDTH, ICON_BAR_BOTTOM, WONTHOUND_HOTPINK);
+    // Header band - big "< Back" pill + centered title + GPS chip
+    whDrawHeaderBand("UPDATE FW");
 
     drawGlitchTitle(SCALE_Y(48), "UPDATE FW");
 
@@ -678,10 +671,8 @@ static void drawNoFilesScreen() {
     tft.fillScreen(TFT_BLACK);
     drawStatusBar();
 
-    tft.drawLine(0, ICON_BAR_TOP, SCREEN_WIDTH, ICON_BAR_TOP, WONTHOUND_MAGENTA);
-    tft.fillRect(0, ICON_BAR_Y, SCREEN_WIDTH, ICON_BAR_H, WONTHOUND_DARK);
-    tft.drawBitmap(10, ICON_BAR_Y, bitmap_icon_go_back, ICON_SIZE, ICON_SIZE, WONTHOUND_MAGENTA);
-    tft.drawLine(0, ICON_BAR_BOTTOM, SCREEN_WIDTH, ICON_BAR_BOTTOM, WONTHOUND_HOTPINK);
+    // Header band - big "< Back" pill + centered title + GPS chip
+    whDrawHeaderBand("UPDATE FW");
 
     drawGlitchTitle(SCALE_Y(48), "UPDATE FW");
 

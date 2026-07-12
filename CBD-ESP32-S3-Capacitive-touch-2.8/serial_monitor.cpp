@@ -11,6 +11,7 @@
 #include "touch_buttons.h"
 #include "icon.h"
 #include "cyd_config.h"
+#include "wh_ui.h"
 
 extern TFT_eSPI tft;
 
@@ -327,11 +328,8 @@ static void drawConfigScreen() {
     tft.fillScreen(TFT_BLACK);
     drawStatusBar();
 
-    // Icon bar - back only
-    tft.drawLine(0, ICON_BAR_TOP, SCREEN_WIDTH, ICON_BAR_TOP, WONTHOUND_MAGENTA);
-    tft.fillRect(0, ICON_BAR_Y, SCREEN_WIDTH, ICON_BAR_H, WONTHOUND_DARK);
-    tft.drawBitmap(10, ICON_BAR_Y, bitmap_icon_go_back, ICON_SIZE, ICON_SIZE, WONTHOUND_MAGENTA);
-    tft.drawLine(0, ICON_BAR_BOTTOM, SCREEN_WIDTH, ICON_BAR_BOTTOM, WONTHOUND_HOTPINK);
+    // Header band - back only (big "< Back" pill + centered title + GPS chip)
+    whDrawHeaderBand("UART TERM");
 
     // Glitch title
     drawGlitchTitle(SCALE_Y(48), "UART TERM");

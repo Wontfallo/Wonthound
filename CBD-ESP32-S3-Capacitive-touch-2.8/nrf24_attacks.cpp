@@ -20,7 +20,9 @@
 #include "shared.h"
 #include "touch_buttons.h"
 #include "utils.h"
+#include "wh_ui.h"
 #include "icon.h"
+#include "wifi_band_utils.h"
 #include <SPI.h>
 #include <WiFi.h>
 
@@ -78,47 +80,44 @@ static int nrfActiveIcon = -1;
 static int nrfAnimState = 0;
 static unsigned long nrfLastAnim = 0;
 
-// Draw icon bar with 3 icons - MATCHES ORIGINAL WONTHOUND
+// Dedicated Back (owns the fixed back zone) + 2 spread actions clear of it.
+// Actions: index 0 = CAL/RESET, index 1 = SCAN (start/stop).
 static void drawNrfIconBar() {
-    tft.drawLine(0, ICON_BAR_TOP, SCREEN_WIDTH, ICON_BAR_TOP, WONTHOUND_MAGENTA);
-    tft.fillRect(0, ICON_BAR_Y, SCREEN_WIDTH, ICON_BAR_H, WONTHOUND_GUNMETAL);
-    for (int i = 0; i < NRF_ICON_NUM; i++) {
-        if (nrfIcons[i] != NULL) {
-            tft.drawBitmap(nrfIconX[i], ICON_BAR_Y, nrfIcons[i], NRF_ICON_SIZE, NRF_ICON_SIZE, WONTHOUND_MAGENTA);
-        }
-    }
-    tft.drawLine(0, ICON_BAR_BOTTOM, SCREEN_WIDTH, ICON_BAR_BOTTOM, WONTHOUND_HOTPINK);
+    whDrawBackButton();
+    WhRect a[2];
+    whTopBarActions(2, a);
+    whTopBtn(a[0], "CAL", WH_OUTLINE);
+    whTopBtn(a[1], "SCAN", WH_ACCENT);
 }
 
-// Check icon bar touch and return icon index (0-2) or -1
+// Check icon bar touch and return icon index (0=CAL, 1=SCAN, 2=Back) or -1.
+// Signature unchanged so all callers (Scanner/others) keep working.
 static int checkNrfIconTouch() {
     uint16_t tx, ty;
     if (isTopLeftBackTouch(&tx, &ty)) {
+        if (nrfAnimState == 0) { nrfAnimState = 1; nrfActiveIcon = 2; nrfLastAnim = millis(); }
         return 2;
     }
     if (peekTouchPoint(&tx, &ty)) {
-        if (ty >= ICON_BAR_TOUCH_TOP && ty <= ICON_BAR_TOUCH_BOTTOM) {
-            for (int i = 0; i < NRF_ICON_NUM; i++) {
-                if (tx >= nrfIconX[i] - 10 && tx <= nrfIconX[i] + NRF_ICON_SIZE + 10) {
-                    if (nrfAnimState == 0) {
-                        tft.drawBitmap(nrfIconX[i], ICON_BAR_Y, nrfIcons[i], NRF_ICON_SIZE, NRF_ICON_SIZE, TFT_BLACK);
-                        nrfAnimState = 1;
-                        nrfActiveIcon = i;
-                        nrfLastAnim = millis();
-                    }
-                    return i;
-                }
-            }
+        WhRect a[2];
+        whTopBarActions(2, a);
+        if (whHit(tx, ty, a[0])) {
+            if (nrfAnimState == 0) { nrfAnimState = 1; nrfActiveIcon = 0; nrfLastAnim = millis(); }
+            return 0;
+        }
+        if (whHit(tx, ty, a[1])) {
+            if (nrfAnimState == 0) { nrfAnimState = 1; nrfActiveIcon = 1; nrfLastAnim = millis(); }
+            return 1;
         }
     }
     return -1;
 }
 
-// Process icon animation and return action (0=calibrate, 1=scan, 2=back, -1=none)
+// Process icon animation and return action (0=cal, 1=scan, 2=back, -1=none).
+// Simplified — no bitmap flash since the labels are already large + high-contrast.
 static int processNrfIconAnim() {
     if (nrfAnimState > 0 && millis() - nrfLastAnim >= 50) {
         if (nrfAnimState == 1) {
-            tft.drawBitmap(nrfIconX[nrfActiveIcon], ICON_BAR_Y, nrfIcons[nrfActiveIcon], NRF_ICON_SIZE, NRF_ICON_SIZE, WONTHOUND_MAGENTA);
             nrfAnimState = 2;
             int action = nrfActiveIcon;
             nrfLastAnim = millis();
@@ -225,7 +224,7 @@ static bool nrfInit() {
     // Reset SPI bus with proper settle time between end/begin
     SPI.end();
     delay(10);
-    SPI.begin(18, 19, 23);  // NO CS pin - manual control with digitalWrite
+    SPI.begin(RADIO_SPI_SCK, RADIO_SPI_MISO, RADIO_SPI_MOSI);  // Manual CS via digitalWrite
     SPI.setDataMode(SPI_MODE0);
     SPI.setFrequency(4000000);  // 4MHz — conservative for reliable detection
     SPI.setBitOrder(MSBFIRST);
@@ -323,7 +322,7 @@ static void scanTask(void* param) {
     // Reinit SPI on Core 0 — take ownership from Core 1
     SPI.end();
     delay(5);
-    SPI.begin(18, 19, 23);  // SCK, MISO, MOSI — manual CS via digitalWrite
+    SPI.begin(RADIO_SPI_SCK, RADIO_SPI_MISO, RADIO_SPI_MOSI);  // Manual CS via digitalWrite
     SPI.setFrequency(8000000);
 
     // Reinit NRF24 registers on Core 0
@@ -1118,6 +1117,9 @@ static void resetPeaks() {
 
 // Set AP channel lock — restricts NRF24 scan to WiFi channel's 22 MHz band
 static void setChannelLock(int wifiCh) {
+    if (wh_wifi_is_5g_channel((uint8_t)wifiCh)) {
+        wifiCh = 0;
+    }
     lockedWifiCh = wifiCh;
     if (wifiCh == 0) {
         lockStartNrf = 0;
@@ -1141,7 +1143,7 @@ static void anaTask(void* param) {
     // Reinit SPI on Core 0 — take ownership from Core 1
     SPI.end();
     delay(5);
-    SPI.begin(18, 19, 23);  // SCK, MISO, MOSI — manual CS via digitalWrite
+    SPI.begin(RADIO_SPI_SCK, RADIO_SPI_MISO, RADIO_SPI_MOSI);  // Manual CS via digitalWrite
     SPI.setFrequency(8000000);
 
     // Reinit NRF24 registers on Core 0
@@ -1277,40 +1279,19 @@ static void drawApSignalBars(int x, int y, int rssi) {
     }
 }
 
-// Draw analyzer icon bar — replaces icon 0 (undo) with wifi icon for AP Select
+// Analyzer bar — dedicated Back + AP-Select + Scan-toggle. Uses the same
+// shared checkNrfIconTouch() mapping: 0=AP Select, 1=Scan, 2=Back.
 static void drawAnalyzerIconBar() {
-    tft.drawLine(0, ICON_BAR_TOP, SCREEN_WIDTH, ICON_BAR_TOP, WONTHOUND_MAGENTA);
-    tft.fillRect(0, ICON_BAR_Y, SCREEN_WIDTH, ICON_BAR_H, WONTHOUND_GUNMETAL);
-    // Back icon at position 2
-    tft.drawBitmap(nrfIconX[2], ICON_BAR_Y, bitmap_icon_go_back, NRF_ICON_SIZE, NRF_ICON_SIZE, WONTHOUND_MAGENTA);
-    // AP Select (wifi) icon at position 0 — NOT undo
-    tft.drawBitmap(nrfIconX[0], ICON_BAR_Y, bitmap_icon_wifi, NRF_ICON_SIZE, NRF_ICON_SIZE, WONTHOUND_MAGENTA);
-    // Start/Stop icon at position 1
-    tft.drawBitmap(nrfIconX[1], ICON_BAR_Y, bitmap_icon_start, NRF_ICON_SIZE, NRF_ICON_SIZE, WONTHOUND_MAGENTA);
-    // Title text between back icon and action icons
-    tft.setTextColor(WONTHOUND_MAGENTA);
-    tft.setTextSize(1);
-    tft.setCursor(30, ICON_BAR_Y + 4);
-    if (lockedWifiCh > 0) {
-        char title[25];
-        snprintf(title, sizeof(title), "Ch%d: %.12s", lockedWifiCh, lockedSSID);
-        tft.print(title);
-    } else {
-        tft.print("2.4GHz ANALYZER");
-    }
-    tft.drawLine(0, ICON_BAR_BOTTOM, SCREEN_WIDTH, ICON_BAR_BOTTOM, WONTHOUND_HOTPINK);
+    whDrawBackButton();
+    WhRect a[2];
+    whTopBarActions(2, a);
+    whTopBtn(a[0], "AP", WH_OUTLINE);
+    whTopBtn(a[1], "SCAN", WH_ACCENT);
 }
 
-// Draw AP select screen icon bar
+// AP-select bar — dedicated Back only (title dropped, list starts below).
 static void drawApSelectIconBar() {
-    tft.drawLine(0, ICON_BAR_TOP, SCREEN_WIDTH, ICON_BAR_TOP, WONTHOUND_MAGENTA);
-    tft.fillRect(0, ICON_BAR_Y, SCREEN_WIDTH, ICON_BAR_H, WONTHOUND_DARK);
-    tft.drawBitmap(10, ICON_BAR_Y, bitmap_icon_go_back, NRF_ICON_SIZE, NRF_ICON_SIZE, WONTHOUND_MAGENTA);
-    tft.setTextColor(WONTHOUND_HOTPINK);
-    tft.setTextSize(1);
-    tft.setCursor(30, ICON_BAR_Y + 4);
-    tft.print("AP SELECT");
-    tft.drawLine(0, ICON_BAR_BOTTOM, SCREEN_WIDTH, ICON_BAR_BOTTOM, WONTHOUND_HOTPINK);
+    whDrawBackButton();
 }
 
 // AP Select screen — WiFi scan, show AP list, lock analyzer to selected channel
@@ -1329,6 +1310,7 @@ static void showAPSelectScreen() {
     // Quick WiFi scan
     WiFi.mode(WIFI_STA);
     delay(100);
+    wh_wifi_prepare_scan_dual_band();
     int apCount = WiFi.scanNetworks(false, true);  // Blocking, show hidden
 
     if (apCount > 0) {
@@ -1372,6 +1354,7 @@ static void showAPSelectScreen() {
                     String ssid = WiFi.SSID(apIdx);
                     if (ssid.length() == 0) ssid = "(Hidden)";
                     int ch = WiFi.channel(apIdx);
+                    bool is5g = wh_wifi_is_5g_channel((uint8_t)ch);
                     int rssi = WiFi.RSSI(apIdx);
                     int enc = WiFi.encryptionType(apIdx);
                     bool isCurrent = (lockedWifiCh > 0 && ch == lockedWifiCh);
@@ -1404,9 +1387,13 @@ static void showAPSelectScreen() {
 
                     // Channel number
                     tft.setCursor(SCALE_X(150), y + 2);
-                    tft.setTextColor(isCurrent ? WONTHOUND_HOTPINK : WONTHOUND_VIOLET);
-                    if (ch < 10) tft.print(" ");
-                    tft.print(ch);
+                    tft.setTextColor(is5g ? WONTHOUND_GUNMETAL : (isCurrent ? WONTHOUND_HOTPINK : WONTHOUND_VIOLET));
+                    if (is5g) {
+                        tft.print("5G");
+                    } else {
+                        if (ch < 10) tft.print(" ");
+                        tft.print(ch);
+                    }
 
                     // Signal bars
                     drawApSignalBars(SCREEN_WIDTH - 22, y + 2, rssi);
@@ -1478,7 +1465,11 @@ static void showAPSelectScreen() {
                             int ch = WiFi.channel(apIdx);
                             String ssid = WiFi.SSID(apIdx);
                             if (ssid.length() == 0) ssid = "(Hidden)";
-                            setChannelLock(ch);
+                            if (wh_wifi_is_5g_channel((uint8_t)ch)) {
+                                setChannelLock(0);
+                            } else {
+                                setChannelLock(ch);
+                            }
                             strncpy(lockedSSID, ssid.c_str(), sizeof(lockedSSID) - 1);
                             lockedSSID[sizeof(lockedSSID) - 1] = '\0';
                             selected = true;
@@ -1797,32 +1788,32 @@ static int jamActiveIcon = -1;
 static int jamAnimState = 0;
 static unsigned long jamLastAnim = 0;
 
+// WLANJammer bar — dedicated Back + 2 spread actions (0=Toggle, 1=Next Channel).
+// Signature/return-index unchanged so caller mapping still works.
 static void drawJamIconBar() {
-    tft.drawLine(0, ICON_BAR_TOP, SCREEN_WIDTH, ICON_BAR_TOP, WONTHOUND_MAGENTA);
-    tft.fillRect(0, ICON_BAR_Y, SCREEN_WIDTH, ICON_BAR_H, WONTHOUND_GUNMETAL);
-    for (int i = 0; i < JAM_ICON_NUM; i++) {
-        if (jamIcons[i] != NULL) {
-            tft.drawBitmap(jamIconX[i], ICON_BAR_Y, jamIcons[i], 16, 16, WONTHOUND_MAGENTA);
-        }
-    }
-    tft.drawLine(0, ICON_BAR_BOTTOM, SCREEN_WIDTH, ICON_BAR_BOTTOM, WONTHOUND_HOTPINK);
+    whDrawBackButton();
+    WhRect a[2];
+    whTopBarActions(2, a);
+    whTopBtn(a[0], jammerActive ? "STOP" : "JAM", jammerActive ? WH_ON : WH_ACCENT);
+    whTopBtn(a[1], "CH+", WH_OUTLINE);
 }
 
 static int checkJamIconTouch() {
     uint16_t tx, ty;
+    if (isTopLeftBackTouch(&tx, &ty)) {
+        if (jamAnimState == 0) { jamAnimState = 1; jamActiveIcon = 2; jamLastAnim = millis(); }
+        return 2;
+    }
     if (getTouchPoint(&tx, &ty)) {
-        if (ty >= ICON_BAR_TOUCH_TOP && ty <= ICON_BAR_TOUCH_BOTTOM) {
-            for (int i = 0; i < JAM_ICON_NUM; i++) {
-                if (tx >= jamIconX[i] - 5 && tx <= jamIconX[i] + 21) {
-                    if (jamAnimState == 0) {
-                        tft.drawBitmap(jamIconX[i], ICON_BAR_Y, jamIcons[i], 16, 16, TFT_BLACK);
-                        jamAnimState = 1;
-                        jamActiveIcon = i;
-                        jamLastAnim = millis();
-                    }
-                    return i;
-                }
-            }
+        WhRect a[2];
+        whTopBarActions(2, a);
+        if (whHit(tx, ty, a[0])) {
+            if (jamAnimState == 0) { jamAnimState = 1; jamActiveIcon = 0; jamLastAnim = millis(); }
+            return 0;
+        }
+        if (whHit(tx, ty, a[1])) {
+            if (jamAnimState == 0) { jamAnimState = 1; jamActiveIcon = 1; jamLastAnim = millis(); }
+            return 1;
         }
     }
     return -1;
@@ -1831,7 +1822,6 @@ static int checkJamIconTouch() {
 static int processJamIconAnim() {
     if (jamAnimState > 0 && millis() - jamLastAnim >= 50) {
         if (jamAnimState == 1) {
-            tft.drawBitmap(jamIconX[jamActiveIcon], ICON_BAR_Y, jamIcons[jamActiveIcon], 16, 16, WONTHOUND_MAGENTA);
             jamAnimState = 2;
             int action = jamActiveIcon;
             jamLastAnim = millis();
@@ -2461,31 +2451,30 @@ static int pkActiveIcon = -1;
 static int pkAnimState = 0;
 static unsigned long pkLastAnim = 0;
 
+// ProtoKill bar — dedicated Back + 3 spread actions (0=Toggle, 1=Mode+, 2=Mode-).
+// Signature/return-index unchanged so all callers keep working.
 static void drawPkIconBar() {
-    tft.drawLine(0, ICON_BAR_TOP, SCREEN_WIDTH, ICON_BAR_TOP, WONTHOUND_MAGENTA);
-    tft.fillRect(0, ICON_BAR_Y, SCREEN_WIDTH, ICON_BAR_H, WONTHOUND_GUNMETAL);
-    for (int i = 0; i < PK_ICON_NUM; i++) {
-        if (pkIcons[i] != NULL) {
-            tft.drawBitmap(pkIconX[i], ICON_BAR_Y, pkIcons[i], 16, 16, WONTHOUND_MAGENTA);
-        }
-    }
-    tft.drawLine(0, ICON_BAR_BOTTOM, SCREEN_WIDTH, ICON_BAR_BOTTOM, WONTHOUND_HOTPINK);
+    whDrawBackButton();
+    WhRect a[3];
+    whTopBarActions(3, a);
+    whTopBtn(a[0], pkJamTaskRunning ? "STOP" : "GO",  pkJamTaskRunning ? WH_ON : WH_ACCENT);
+    whTopBtn(a[1], "MODE+", WH_OUTLINE);
+    whTopBtn(a[2], "MODE-", WH_OUTLINE);
 }
 
 static int checkPkIconTouch() {
     uint16_t tx, ty;
+    if (isTopLeftBackTouch(&tx, &ty)) {
+        if (pkAnimState == 0) { pkAnimState = 1; pkActiveIcon = 3; pkLastAnim = millis(); }
+        return 3;
+    }
     if (getTouchPoint(&tx, &ty)) {
-        if (ty >= ICON_BAR_TOUCH_TOP && ty <= ICON_BAR_TOUCH_BOTTOM) {
-            for (int i = 0; i < PK_ICON_NUM; i++) {
-                if (tx >= pkIconX[i] - 5 && tx <= pkIconX[i] + 21) {
-                    if (pkAnimState == 0) {
-                        tft.drawBitmap(pkIconX[i], ICON_BAR_Y, pkIcons[i], 16, 16, TFT_BLACK);
-                        pkAnimState = 1;
-                        pkActiveIcon = i;
-                        pkLastAnim = millis();
-                    }
-                    return i;
-                }
+        WhRect a[3];
+        whTopBarActions(3, a);
+        for (int i = 0; i < 3; i++) {
+            if (whHit(tx, ty, a[i])) {
+                if (pkAnimState == 0) { pkAnimState = 1; pkActiveIcon = i; pkLastAnim = millis(); }
+                return i;
             }
         }
     }
@@ -2495,7 +2484,6 @@ static int checkPkIconTouch() {
 static int processPkIconAnim() {
     if (pkAnimState > 0 && millis() - pkLastAnim >= 50) {
         if (pkAnimState == 1) {
-            tft.drawBitmap(pkIconX[pkActiveIcon], ICON_BAR_Y, pkIcons[pkActiveIcon], 16, 16, WONTHOUND_MAGENTA);
             pkAnimState = 2;
             int action = pkActiveIcon;
             pkLastAnim = millis();
@@ -3106,7 +3094,7 @@ static void snRxTask(void* param) {
     // Reinit SPI on Core 0
     SPI.end();
     delay(5);
-    SPI.begin(18, 19, 23);
+    SPI.begin(RADIO_SPI_SCK, RADIO_SPI_MISO, RADIO_SPI_MOSI);
     SPI.setFrequency(8000000);
 
     // Configure NRF24 for promiscuous mode (raw SPI)
@@ -3258,13 +3246,14 @@ static const unsigned char* const snIcons[SN_ICON_NUM] = {
 };
 static int snSkullFrame = 0;
 
+// Sniffer bar — dedicated Back + 3 spread actions (0=Scan, 1=Ch Lock, 2=Down).
 static void drawSnIconBar() {
-    tft.drawLine(0, ICON_BAR_TOP, SCREEN_WIDTH, ICON_BAR_TOP, WONTHOUND_MAGENTA);
-    tft.fillRect(0, ICON_BAR_Y, SCREEN_WIDTH, ICON_BAR_H, WONTHOUND_GUNMETAL);
-    for (int i = 0; i < SN_ICON_NUM; i++) {
-        tft.drawBitmap(snIconX[i], ICON_BAR_Y, snIcons[i], 16, 16, WONTHOUND_MAGENTA);
-    }
-    tft.drawLine(0, ICON_BAR_BOTTOM, SCREEN_WIDTH, ICON_BAR_BOTTOM, WONTHOUND_HOTPINK);
+    whDrawBackButton();
+    WhRect a[3];
+    whTopBarActions(3, a);
+    whTopBtn(a[0], snScanning ? "STOP" : "SCAN", snScanning ? WH_ON : WH_ACCENT);
+    whTopBtn(a[1], snChannelLock ? "LOCK*" : "LOCK", WH_OUTLINE);
+    whTopBtn(a[2], "DN",  WH_OUTLINE);
 }
 
 // ── Detect frame type label ───────────────────────────────────────────────
@@ -3634,33 +3623,33 @@ void loop() {
             return;
         }
 
-        // Icon bar touch
-        if (ty >= ICON_BAR_TOUCH_TOP && ty <= ICON_BAR_TOUCH_BOTTOM) {
-            // Back
-            if (tx < 40) {
+        // Top control bar: dedicated Back + 3 spread actions clear of it.
+        {
+            WhRect a[3];
+            whTopBarActions(3, a);
+            if (whHit(tx, ty, whBackButtonRect())) {
                 snExitRequested = true;
                 return;
             }
-            // Start/Stop
-            if (tx >= snIconX[0] - 10 && tx < snIconX[0] + 25) {
+            if (whHit(tx, ty, a[0])) {                       // Start/Stop
                 waitForTouchRelease();
                 delay(200);
                 snScanning = !snScanning;
                 if (snScanning) startSnTask(); else stopSnTask();
+                drawSnIconBar();
                 drawSnHeader();
                 return;
             }
-            // Channel lock toggle
-            if (tx >= snIconX[1] - 10 && tx < snIconX[1] + 25) {
+            if (whHit(tx, ty, a[1])) {                       // Channel lock
                 waitForTouchRelease();
                 delay(200);
                 snChannelLock = !snChannelLock;
                 if (snChannelLock) snLockedChannel = snCurrentCh;
+                drawSnIconBar();
                 drawSnHeader();
                 return;
             }
-            // Scroll down
-            if (tx >= snIconX[2] - 10 && tx < snIconX[2] + 25) {
+            if (whHit(tx, ty, a[2])) {                       // Scroll down
                 waitForTouchRelease();
                 delay(150);
                 if (snScrollOffset + SN_DISPLAY_ROWS < snPacketCount) {
@@ -4083,7 +4072,7 @@ static void mjScanTask(void* param) {
     // Reinit SPI on Core 0
     SPI.end();
     delay(5);
-    SPI.begin(18, 19, 23);
+    SPI.begin(RADIO_SPI_SCK, RADIO_SPI_MISO, RADIO_SPI_MOSI);
     SPI.setFrequency(8000000);
 
     // Configure pins
@@ -4232,13 +4221,18 @@ static const unsigned char* const mjIcons[MJ_ICON_NUM] = {
     bitmap_icon_RIGHT      // [4] Next payload
 };
 
+// MouseJack bar — dedicated Back + 4 spread actions clear of it.
+// Actions: 0=Scan, 1=Test Key, 2=Inject/Stop, 3=Next Payload.
 static void drawMjIconBar() {
-    tft.drawLine(0, ICON_BAR_TOP, SCREEN_WIDTH, ICON_BAR_TOP, WONTHOUND_MAGENTA);
-    tft.fillRect(0, ICON_BAR_Y, SCREEN_WIDTH, ICON_BAR_H, WONTHOUND_GUNMETAL);
-    for (int i = 0; i < MJ_ICON_NUM; i++) {
-        tft.drawBitmap(mjIconX[i], ICON_BAR_Y, mjIcons[i], 16, 16, WONTHOUND_MAGENTA);
-    }
-    tft.drawLine(0, ICON_BAR_BOTTOM, SCREEN_WIDTH, ICON_BAR_BOTTOM, WONTHOUND_HOTPINK);
+    whDrawBackButton();
+    WhRect a[4];
+    whTopBarActions(4, a);
+    bool scan = mj && mj->scanning;
+    bool inj  = mj && mj->injecting;
+    whTopBtn(a[0], scan ? "STOP" : "SCAN", scan ? WH_ON : WH_ACCENT);
+    whTopBtn(a[1], "KEY",  WH_OUTLINE);
+    whTopBtn(a[2], inj  ? "STOP" : "INJ",  inj  ? WH_ON : WH_ACCENT);
+    whTopBtn(a[3], "NEXT", WH_OUTLINE);
 }
 
 // ── Test key feature (send harmless right-arrow to verify injection) ─────
@@ -4638,65 +4632,61 @@ void loop() {
 
     uint16_t tx, ty;
     if (getTouchPoint(&tx, &ty)) {
-        if (ty >= ICON_BAR_TOUCH_TOP && ty <= ICON_BAR_TOUCH_BOTTOM) {
-            // [0] Back (x < 40)
-            if (tx < 40) {
-                if (mj->scanning) stopMjScan();
-                if (mj->injecting) stopMjTask();
-                mjExitRequested = true;
-                return;
+        WhRect a[4];
+        whTopBarActions(4, a);
+        if (whHit(tx, ty, whBackButtonRect())) {           // Back
+            if (mj->scanning) stopMjScan();
+            if (mj->injecting) stopMjTask();
+            mjExitRequested = true;
+            return;
+        }
+        if (whHit(tx, ty, a[0])) {                          // Scan / Stop-Scan
+            waitForTouchRelease();
+            delay(200);
+            if (mj->scanning) {
+                stopMjScan();
+            } else if (!mj->injecting) {
+                memset(mj->targetAddr, 0, 5);
+                mj->hasTarget = false;
+                mj->deviceType = 0;
+                mj->testTime = 0;
+                mj->keystrokesSent = 0;
+                mj->packetsOk = 0;
+                mj->packetsFail = 0;
+                startMjScan();
             }
-            // [1] Scan (mjIconX[1] area)
-            if (tx >= mjIconX[1] - 10 && tx < mjIconX[1] + 25) {
-                waitForTouchRelease();
-                delay(200);
-                if (mj->scanning) {
-                    stopMjScan();
-                } else if (!mj->injecting) {
-                    // Clear old target before scanning
-                    memset(mj->targetAddr, 0, 5);
-                    mj->hasTarget = false;
-                    mj->deviceType = 0;
-                    mj->testTime = 0;
-                    mj->keystrokesSent = 0;
-                    mj->packetsOk = 0;
-                    mj->packetsFail = 0;
-                    startMjScan();
-                }
-                drawMjHeader();
-                drawMjContent();
-                return;
+            drawMjIconBar();
+            drawMjHeader();
+            drawMjContent();
+            return;
+        }
+        if (whHit(tx, ty, a[1])) {                          // Test keystroke
+            waitForTouchRelease();
+            delay(200);
+            mjTestKey();
+            drawMjContent();
+            return;
+        }
+        if (whHit(tx, ty, a[2])) {                          // Inject / Stop
+            waitForTouchRelease();
+            delay(200);
+            if (mj->injecting) {
+                stopMjTask();
+                mj->injecting = false;
+            } else if (mj->hasTarget && !mj->scanning) {
+                startMjTask();
             }
-            // [2] Test keystroke (mjIconX[2] area)
-            if (tx >= mjIconX[2] - 10 && tx < mjIconX[2] + 25) {
-                waitForTouchRelease();
-                delay(200);
-                mjTestKey();
-                drawMjContent();
-                return;
-            }
-            // [3] Inject / Stop (mjIconX[3] area)
-            if (tx >= mjIconX[3] - 10 && tx < mjIconX[3] + 25) {
-                waitForTouchRelease();
-                delay(200);
-                if (mj->injecting) {
-                    stopMjTask();
-                    mj->injecting = false;
-                } else if (mj->hasTarget && !mj->scanning) {
-                    startMjTask();
-                }
-                drawMjHeader();
-                drawMjContent();
-                return;
-            }
-            // [4] Next payload (mjIconX[4] area)
-            if (tx >= mjIconX[4] - 10 && tx < mjIconX[4] + 25) {
-                waitForTouchRelease();
-                delay(200);
-                mj->selectedPayload = (mj->selectedPayload + 1) % MJ_PAYLOAD_COUNT;
-                drawMjContent();
-                return;
-            }
+            drawMjIconBar();
+            drawMjHeader();
+            drawMjContent();
+            return;
+        }
+        if (whHit(tx, ty, a[3])) {                          // Next payload
+            waitForTouchRelease();
+            delay(200);
+            mj->selectedPayload = (mj->selectedPayload + 1) % MJ_PAYLOAD_COUNT;
+            drawMjContent();
+            return;
         }
     }
 

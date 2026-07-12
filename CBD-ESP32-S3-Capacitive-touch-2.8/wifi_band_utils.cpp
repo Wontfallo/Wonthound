@@ -1,5 +1,6 @@
 #define WONTHOUND_WIFI_BAND_UTILS_IMPL
 #include "wifi_band_utils.h"
+#include "radio_power_utils.h"
 
 const uint8_t WH_WIFI_2G_CHANNELS[WONTHOUND_WIFI_2G_CHANNEL_COUNT] = {
     1, 6, 11, 2, 3, 4, 5, 7, 8, 9, 10
@@ -85,14 +86,15 @@ uint8_t wh_random_wifi_channel() {
 }
 
 void wh_wifi_configure_country() {
-#if WONTHOUND_HAS_WIFI_5G
     wifi_country_t desired = {};
     desired.cc[0] = 'U';
     desired.cc[1] = 'S';
     desired.cc[2] = ' ';
     desired.schan = 1;
     desired.nchan = 11;
-    desired.max_tx_power = 82;
+    // wifi_country_t stores whole dBm. esp_wifi_set_max_tx_power() separately
+    // uses quarter-dBm units, so its corresponding maximum request is 80.
+    desired.max_tx_power = 20;
     desired.policy = WIFI_COUNTRY_POLICY_MANUAL;
 #if CONFIG_SOC_WIFI_SUPPORT_5G
     desired.wifi_5g_channel_mask =
@@ -111,6 +113,7 @@ void wh_wifi_configure_country() {
                     current.cc[1] == desired.cc[1] &&
                     current.schan == desired.schan &&
                     current.nchan == desired.nchan &&
+                    current.max_tx_power == desired.max_tx_power &&
                     current.policy == desired.policy;
 #if CONFIG_SOC_WIFI_SUPPORT_5G
         same = same && current.wifi_5g_channel_mask == desired.wifi_5g_channel_mask;
@@ -118,8 +121,10 @@ void wh_wifi_configure_country() {
         if (same) return;
     }
 
-    esp_wifi_set_country(&desired);
-#endif
+    esp_err_t err = esp_wifi_set_country(&desired);
+    if (err != ESP_OK) {
+        Serial.printf("[S3-RF] country setup failed: 0x%x\n", err);
+    }
 }
 
 void wh_wifi_configure_dual_band() {
@@ -168,6 +173,58 @@ void wh_wifi_prepare_ap_channel(uint8_t channel) {
 #else
     (void)channel;
 #endif
+}
+
+bool wh_wifi_prepare_sta_scan() {
+    WiFi.persistent(false);
+    WiFi.scanDelete();
+
+    // Raw monitor/attack modules may leave promiscuous callbacks registered.
+    // Shut them down before returning ownership to Arduino's WiFi event layer.
+    esp_wifi_set_promiscuous(false);
+    esp_wifi_set_promiscuous_rx_cb(nullptr);
+
+    bool offOk = WiFi.mode(WIFI_OFF);
+    delay(150);
+    bool staOk = WiFi.mode(WIFI_STA);
+    delay(250);
+
+    if (staOk) {
+        WiFi.disconnect(false, false);
+        delay(250);
+        wh_wifi_configure_country();
+        wh_wifi_prepare_scan_dual_band();
+        esp_wifi_set_ps(WIFI_PS_NONE);
+        wh_wifi_apply_max_tx_power("STA scan");
+    }
+
+    wifi_mode_t mode = WIFI_MODE_NULL;
+    esp_err_t modeErr = esp_wifi_get_mode(&mode);
+    bool ready = staOk && modeErr == ESP_OK && (mode & WIFI_MODE_STA);
+    Serial.printf("[S3-WIFI] STA reset off=%d sta=%d modeErr=0x%x mode=%u ready=%d\n",
+                  offOk, staOk, modeErr, static_cast<unsigned>(mode), ready);
+    return ready;
+}
+
+int16_t wh_wifi_scan_networks(bool showHidden,
+                              uint32_t maxMsPerChannel,
+                              uint8_t channel,
+                              bool resetRadio) {
+    if (resetRadio && !wh_wifi_prepare_sta_scan()) {
+        return WIFI_SCAN_FAILED;
+    }
+
+    int16_t count = WiFi.scanNetworks(false, showHidden, false,
+                                      maxMsPerChannel, channel);
+    if (count >= 0 || !resetRadio) return count;
+
+    // A failed event-driven scan usually means a prior raw ESP-IDF module left
+    // the driver between states. Rebuild STA once and retry through Arduino.
+    Serial.printf("[S3-WIFI] scan failed=%d; resetting STA and retrying\n", count);
+    WiFi.scanDelete();
+    if (!wh_wifi_prepare_sta_scan()) return count;
+    return WiFi.scanNetworks(false, showHidden, false,
+                             maxMsPerChannel, channel);
 }
 
 void wh_wifi_print_c5_runtime_report() {

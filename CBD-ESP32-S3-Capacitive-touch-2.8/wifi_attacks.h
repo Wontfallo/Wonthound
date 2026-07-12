@@ -1,6 +1,8 @@
 #ifndef WIFI_ATTACKS_H
 #define WIFI_ATTACKS_H
 
+#include "wifi_band_utils.h"
+
 // ═══════════════════════════════════════════════════════════════════════════
 // WontHound-CYD WiFi Attack Modules
 // COMPLETE WONTHOUND WIFI ATTACK SUITE - Adapted for CYD Touch Interface

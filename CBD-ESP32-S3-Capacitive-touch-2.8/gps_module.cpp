@@ -11,6 +11,7 @@
 #include "utils.h"
 #include "touch_buttons.h"
 #include "icon.h"
+#include "wh_ui.h"
 #if __has_include("hlp_protocol.h")
   #include "hlp_protocol.h"
   #define HAS_HLP_PROTOCOL 1
@@ -102,11 +103,12 @@ static uint8_t  hlpTxBuf[HLP_FRAME_OVERHEAD + 4];  // Small TX buffer (PING/PONG
 // ICON BAR
 // ═══════════════════════════════════════════════════════════════════════════
 
+// Standard header — big "< Back" pill + centered title + live GPS chip (shared
+// wh_ui toolkit). Upgraded from the legacy 16px icon bar; the band ends at y34
+// (above the old ICON_BAR_BOTTOM=36) so the GPS map/instrument content below is
+// unaffected. The band's own GPS chip supersedes drawStatusBar()'s indicator.
 static void drawGPSIconBar() {
-    tft.drawLine(0, ICON_BAR_Y - 1, SCREEN_WIDTH, ICON_BAR_Y - 1, WONTHOUND_MAGENTA);
-    tft.fillRect(0, ICON_BAR_Y, SCREEN_WIDTH, ICON_BAR_H, WONTHOUND_DARK);
-    tft.drawBitmap(10, ICON_BAR_Y, bitmap_icon_go_back, 16, 16, WONTHOUND_MAGENTA);
-    tft.drawLine(0, ICON_BAR_BOTTOM, SCREEN_WIDTH, ICON_BAR_BOTTOM, WONTHOUND_HOTPINK);
+    whDrawHeaderBand("GPS TRACKER");
 }
 
 // Check if back icon tapped - uses icon bar defines from cyd_config.h

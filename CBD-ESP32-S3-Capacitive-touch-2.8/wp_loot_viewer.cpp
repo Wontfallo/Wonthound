@@ -16,6 +16,7 @@
 #include "utils.h"
 #include "icon.h"
 #include "nosifer_font.h"
+#include "wh_ui.h"
 #include <TFT_eSPI.h>
 #include "storage.h"
 #include <SPI.h>
@@ -170,7 +171,7 @@ static bool mountSD() {
     }
 
     // Retry with explicit SPI init
-    SPI.begin(18, 19, 23, SD_CS);
+    SPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
     if (SD.begin(SD_CS, SPI, 4000000, "/sd", 1)) {
         #if CYD_DEBUG
         Serial.println("[WPLOOT] SD mount OK (explicit SPI)");
@@ -458,8 +459,7 @@ static void dumpToSerial(int idx) {
 
 static void drawListHeader() {
     tft.fillScreen(TFT_BLACK);
-    drawStatusBar();
-    drawWLIconBar();
+    whDrawHeaderBand("WP LOOT");   // big "< Back" pill + centered title + GPS chip (y0..34)
     drawGlitchText(55, "WP LOOT", &Nosifer_Regular10pt7b);
     tft.drawLine(0, 58, tft.width(), 58, WONTHOUND_HOTPINK);
 
@@ -546,8 +546,7 @@ static void drawFileList() {
 
 static void drawEmptyScreen() {
     tft.fillScreen(TFT_BLACK);
-    drawStatusBar();
-    drawWLIconBar();
+    whDrawHeaderBand("WP LOOT");   // big "< Back" pill + centered title + GPS chip (y0..34)
     drawGlitchText(55, "WP LOOT", &Nosifer_Regular10pt7b);
     tft.drawLine(0, 58, tft.width(), 58, WONTHOUND_HOTPINK);
 
@@ -729,8 +728,7 @@ static void drawViewPage1() {
     if (!pLoot) return;
     // Page 1: Target info + Phase 1 results
     tft.fillScreen(TFT_BLACK);
-    drawStatusBar();
-    drawWLIconBar();
+    whDrawHeaderBand("REPORT 1/2");   // big "< Back" pill + centered title + GPS chip (y0..34)
 
     drawGlitchText(55, "REPORT 1/2", &Nosifer_Regular10pt7b);
     tft.drawLine(0, 58, tft.width(), 58, WONTHOUND_HOTPINK);
@@ -847,8 +845,7 @@ static void drawViewPage2() {
     if (!pLoot) return;
     // Page 2: Phase 2 (account key) + Phase 3 (intel)
     tft.fillScreen(TFT_BLACK);
-    drawStatusBar();
-    drawWLIconBar();
+    whDrawHeaderBand("REPORT 2/2");   // big "< Back" pill + centered title + GPS chip (y0..34)
 
     drawGlitchText(55, "REPORT 2/2", &Nosifer_Regular10pt7b);
     tft.drawLine(0, 58, tft.width(), 58, WONTHOUND_HOTPINK);

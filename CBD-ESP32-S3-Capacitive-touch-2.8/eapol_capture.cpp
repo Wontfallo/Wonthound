@@ -16,6 +16,9 @@
 #include "utils.h"
 #include "icon.h"
 #include "nosifer_font.h"
+#include "wifi_band_utils.h"
+#include "radio_power_utils.h"
+#include "wh_ui.h"
 #include <TFT_eSPI.h>
 #include <WiFi.h>
 #include <esp_wifi.h>
@@ -153,10 +156,7 @@ static void wifiFullDeinit() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 static void drawECIconBar() {
-    tft.drawLine(0, ICON_BAR_TOP, SCREEN_WIDTH, ICON_BAR_TOP, WONTHOUND_MAGENTA);
-    tft.fillRect(0, ICON_BAR_Y, SCREEN_WIDTH, ICON_BAR_H, WONTHOUND_DARK);
-    tft.drawBitmap(10, ICON_BAR_Y, bitmap_icon_go_back, 16, 16, WONTHOUND_MAGENTA);
-    tft.drawLine(0, ICON_BAR_BOTTOM, SCREEN_WIDTH, ICON_BAR_BOTTOM, WONTHOUND_HOTPINK);
+    whDrawHeaderBand(nullptr);   // big "< Back" pill + accent rule + GPS chip (band y0..34)
 }
 
 static bool isECBackTapped() {
@@ -575,7 +575,7 @@ static void initPromiscuous() {
     apConfig.ap.beacon_interval = 60000;  // Minimal beacon
     esp_wifi_set_config(WIFI_IF_AP, &apConfig);
 
-    esp_wifi_set_max_tx_power(82);  // Max TX power for deauth
+    wh_wifi_apply_max_tx_power("EAPOL");
     esp_wifi_set_ps(WIFI_PS_NONE);
     esp_wifi_set_channel(apList[selectedAP].channel, WIFI_SECOND_CHAN_NONE);
 
@@ -608,7 +608,7 @@ static void initSD() {
 
     if (!SD.begin(SD_CS)) {
         // Retry with explicit VSPI init at 4MHz (required on E32R28T)
-        SPI.begin(18, 19, 23, SD_CS);
+        SPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
         if (!SD.begin(SD_CS, SPI, 4000000)) {
             sdReady = false;
             return;
@@ -686,11 +686,8 @@ static void drawScanScreen() {
 
 static void runAPScan() {
     // Pure Arduino WiFi API — proven on this hardware
-    WiFi.mode(WIFI_STA);
-    WiFi.disconnect();
-    delay(100);
-
-    int n = WiFi.scanNetworks(false, true);  // blocking, show hidden
+    int n = wh_wifi_scan_networks(true, 300, 0, true);
+    Serial.printf("[EAPOL] S3 WiFi scan result=%d\n", n);
     apCount = 0;
     for (int i = 0; i < n && apCount < EC_MAX_APS; i++) {
         memcpy(apList[apCount].bssid, WiFi.BSSID(i), 6);
