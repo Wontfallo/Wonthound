@@ -1,0 +1,485 @@
+<meta charset="utf-8">
+<title>WontHound S3 — Multi-Radio Wiring</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  /* ─────────────────────────────────────────────────────────────
+     TOKENS — schematic / instrument-panel palette.
+     Net colors are FUNCTIONAL (they encode wire type), so they
+     stay saturated & distinct on both grounds.
+     ───────────────────────────────────────────────────────────── */
+  :root{
+    --bg:#e9eef3; --grid:#d8e1ea;
+    --surface:#ffffff; --surface-2:#f3f7fb; --surface-3:#eaf0f6;
+    --ink:#0e1a24; --ink-2:#38495a; --ink-3:#6b7d8e;
+    --line:#cdd8e2; --line-2:#dbe4ec;
+    --accent:#0a7ea4; --accent-ink:#065066;
+
+    --net-vplus:#d63a3f;  /* V+ / 5V */
+    --net-3v3:#d9820f;    /* 3.3V rail */
+    --net-gnd:#556575;    /* ground */
+    --net-spi:#2563eb;    /* SPI bus + CS */
+    --net-uart:#128a44;   /* UART */
+    --net-ctrl:#8636d1;   /* control GPIO (GDO/CE/IRQ/PPS) */
+    --net-adc:#0a94a6;    /* ADC sense */
+
+    --fatal:#d63a3f; --warn:#c67a00; --tip:#2563eb;
+    --fatal-bg:#fdecec; --warn-bg:#fbf1de; --tip-bg:#e9f0fe;
+
+    --mono:"Cascadia Code","JetBrains Mono",ui-monospace,"SF Mono",Consolas,"Liberation Mono",monospace;
+    --sans:"Segoe UI Variable","Segoe UI",system-ui,-apple-system,Roboto,sans-serif;
+    --shadow:0 1px 2px rgba(16,32,48,.06),0 8px 24px rgba(16,32,48,.07);
+    --radius:14px;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --bg:#080c11; --grid:#111a22;
+      --surface:#0f161d; --surface-2:#141d26; --surface-3:#18232d;
+      --ink:#dbe6f0; --ink-2:#98a9ba; --ink-3:#68798a;
+      --line:#22303c; --line-2:#1b2732;
+      --accent:#2bc4e6; --accent-ink:#bfeefa;
+
+      --net-vplus:#ff6367; --net-3v3:#f5a623; --net-gnd:#8ea0b2;
+      --net-spi:#5b9bff; --net-uart:#3ecb76; --net-ctrl:#bd7dff; --net-adc:#2fd4e6;
+
+      --fatal:#ff6367; --warn:#f0ad3c; --tip:#5b9bff;
+      --fatal-bg:#2a1416; --warn-bg:#241a0c; --tip-bg:#111c2e;
+      --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 30px rgba(0,0,0,.35);
+    }
+  }
+  :root[data-theme="light"]{
+    --bg:#e9eef3; --grid:#d8e1ea;
+    --surface:#ffffff; --surface-2:#f3f7fb; --surface-3:#eaf0f6;
+    --ink:#0e1a24; --ink-2:#38495a; --ink-3:#6b7d8e;
+    --line:#cdd8e2; --line-2:#dbe4ec; --accent:#0a7ea4; --accent-ink:#065066;
+    --net-vplus:#d63a3f; --net-3v3:#d9820f; --net-gnd:#556575;
+    --net-spi:#2563eb; --net-uart:#128a44; --net-ctrl:#8636d1; --net-adc:#0a94a6;
+    --fatal:#d63a3f; --warn:#c67a00; --tip:#2563eb;
+    --fatal-bg:#fdecec; --warn-bg:#fbf1de; --tip-bg:#e9f0fe;
+    --shadow:0 1px 2px rgba(16,32,48,.06),0 8px 24px rgba(16,32,48,.07);
+  }
+  :root[data-theme="dark"]{
+    --bg:#080c11; --grid:#111a22;
+    --surface:#0f161d; --surface-2:#141d26; --surface-3:#18232d;
+    --ink:#dbe6f0; --ink-2:#98a9ba; --ink-3:#68798a;
+    --line:#22303c; --line-2:#1b2732; --accent:#2bc4e6; --accent-ink:#bfeefa;
+    --net-vplus:#ff6367; --net-3v3:#f5a623; --net-gnd:#8ea0b2;
+    --net-spi:#5b9bff; --net-uart:#3ecb76; --net-ctrl:#bd7dff; --net-adc:#2fd4e6;
+    --fatal:#ff6367; --warn:#f0ad3c; --tip:#5b9bff;
+    --fatal-bg:#2a1416; --warn-bg:#241a0c; --tip-bg:#111c2e;
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 30px rgba(0,0,0,.35);
+  }
+
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:
+      linear-gradient(var(--grid) 1px,transparent 1px) 0 0/28px 28px,
+      linear-gradient(90deg,var(--grid) 1px,transparent 1px) 0 0/28px 28px,
+      var(--bg);
+    color:var(--ink); font-family:var(--sans);
+    line-height:1.55; -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1040px; margin:0 auto; padding:clamp(20px,4vw,56px) clamp(16px,4vw,32px) 72px;}
+  section{margin-top:clamp(40px,6vw,68px)}
+
+  /* ── header ─────────────────────────────────────────────── */
+  .eyebrow{font-family:var(--mono); font-size:12px; letter-spacing:.22em; text-transform:uppercase;
+    color:var(--accent-ink); background:var(--surface-3); border:1px solid var(--line);
+    display:inline-block; padding:6px 12px; border-radius:999px;}
+  h1{font-size:clamp(30px,6vw,50px); line-height:1.04; letter-spacing:-.02em; margin:18px 0 0;
+    text-wrap:balance; font-weight:800}
+  h1 .accent{color:var(--accent)}
+  .lede{font-size:clamp(16px,2.3vw,19px); color:var(--ink-2); max-width:62ch; margin:16px 0 0}
+  .chips{display:flex; flex-wrap:wrap; gap:8px; margin-top:22px}
+  .chip{font-family:var(--mono); font-size:12.5px; padding:6px 11px; border-radius:8px;
+    background:var(--surface); border:1px solid var(--line); color:var(--ink-2); white-space:nowrap}
+  .chip b{color:var(--ink); font-weight:600}
+
+  .verified{display:flex; gap:12px; align-items:flex-start; margin-top:24px; padding:14px 16px;
+    background:var(--surface); border:1px solid var(--line); border-left:3px solid var(--accent);
+    border-radius:10px; box-shadow:var(--shadow)}
+  .verified .k{font-family:var(--mono); font-size:11px; letter-spacing:.14em; text-transform:uppercase;
+    color:var(--accent); flex:none; padding-top:2px}
+  .verified p{margin:0; font-size:14px; color:var(--ink-2)}
+
+  h2{font-size:clamp(20px,3.3vw,27px); letter-spacing:-.01em; margin:0 0 6px; font-weight:750}
+  h2 .num{font-family:var(--mono); font-size:.62em; color:var(--accent); margin-right:.6em; font-weight:600}
+  .sub{color:var(--ink-3); margin:0 0 22px; font-size:15px}
+
+  /* ── net legend ─────────────────────────────────────────── */
+  .legend{display:flex; flex-wrap:wrap; gap:10px 18px; padding:14px 16px; background:var(--surface);
+    border:1px solid var(--line); border-radius:12px}
+  .legend span{display:inline-flex; align-items:center; gap:8px; font-family:var(--mono); font-size:12.5px; color:var(--ink-2)}
+  .dot{width:12px; height:12px; border-radius:50%; flex:none; box-shadow:0 0 0 3px color-mix(in srgb,currentColor 16%,transparent)}
+
+  /* ── schematic frame ────────────────────────────────────── */
+  .figframe{background:var(--surface); border:1px solid var(--line); border-radius:var(--radius);
+    box-shadow:var(--shadow); overflow:hidden; margin-top:16px}
+  .figframe .cap{display:flex; justify-content:space-between; gap:12px; align-items:center; flex-wrap:wrap;
+    padding:12px 16px; border-bottom:1px solid var(--line-2); background:var(--surface-2)}
+  .figframe .cap b{font-family:var(--mono); font-size:12px; letter-spacing:.12em; text-transform:uppercase; color:var(--ink-2)}
+  .figframe .cap em{font-style:normal; font-family:var(--mono); font-size:11.5px; color:var(--ink-3)}
+  .scroll{overflow-x:auto}
+  .scroll svg{display:block}
+  @media (max-width:760px){ .scroll svg{min-width:720px} }
+
+  /* ── pin table ──────────────────────────────────────────── */
+  .tbl-wrap{overflow-x:auto; border:1px solid var(--line); border-radius:var(--radius); box-shadow:var(--shadow); background:var(--surface)}
+  table{border-collapse:collapse; width:100%; min-width:640px; font-size:14px}
+  thead th{font-family:var(--mono); font-size:11px; letter-spacing:.1em; text-transform:uppercase; color:var(--ink-3);
+    text-align:left; padding:12px 14px; background:var(--surface-2); border-bottom:1px solid var(--line); position:sticky; top:0}
+  tbody td{padding:11px 14px; border-bottom:1px solid var(--line-2); vertical-align:top}
+  tbody tr:last-child td{border-bottom:none}
+  .grouphdr td{background:var(--surface-3); font-family:var(--mono); font-size:12px; letter-spacing:.08em;
+    text-transform:uppercase; color:var(--ink-2); font-weight:600}
+  .grouphdr td .vbadge{float:right; font-weight:600}
+  td .sig{font-family:var(--mono); font-weight:600; color:var(--ink); display:inline-flex; align-items:center; gap:8px}
+  td .gpio{font-family:var(--mono); font-weight:700}
+  td .note{color:var(--ink-3); font-size:13px}
+  .tag{font-family:var(--mono); font-size:10.5px; padding:2px 6px; border-radius:5px; border:1px solid var(--line);
+    color:var(--ink-2); background:var(--surface-2); white-space:nowrap; margin-left:6px}
+  .tag.opt{color:var(--ink-3)}
+  .tag.pull{color:var(--warn); border-color:color-mix(in srgb,var(--warn) 40%,var(--line))}
+  .v-33{color:var(--net-3v3)} .v-5{color:var(--net-vplus)}
+
+  /* ── power tree ─────────────────────────────────────────── */
+  .flow{display:flex; flex-wrap:wrap; align-items:stretch; gap:0; margin-top:16px}
+  .pblock{flex:1 1 150px; min-width:140px; background:var(--surface); border:1px solid var(--line);
+    border-radius:12px; padding:14px; box-shadow:var(--shadow); position:relative}
+  .pblock .rail{font-family:var(--mono); font-size:10.5px; letter-spacing:.08em; text-transform:uppercase; font-weight:700}
+  .pblock h4{margin:6px 0 4px; font-size:15px; font-weight:700}
+  .pblock p{margin:0; font-size:12.5px; color:var(--ink-3); line-height:1.45}
+  .arrow{display:flex; align-items:center; justify-content:center; flex:0 0 30px; color:var(--ink-3); font-size:20px}
+  @media (max-width:720px){ .arrow{flex-basis:100%; height:26px; transform:rotate(90deg)} }
+  .rail-5{color:var(--net-vplus)} .rail-bat{color:var(--net-3v3)} .rail-33{color:var(--net-3v3)}
+
+  .rules{list-style:none; padding:0; margin:20px 0 0; display:grid; gap:10px}
+  .rules li{display:flex; gap:12px; align-items:flex-start; padding:12px 14px; background:var(--surface);
+    border:1px solid var(--line); border-radius:10px; font-size:14px; color:var(--ink-2)}
+  .rules li b{color:var(--ink)}
+  .rules .mk{font-family:var(--mono); font-size:11px; font-weight:700; flex:none; padding:2px 7px; border-radius:6px; margin-top:1px}
+  .mk.f{color:var(--fatal); background:var(--fatal-bg)}
+  .mk.w{color:var(--warn); background:var(--warn-bg)}
+
+  /* ── gotcha cards ───────────────────────────────────────── */
+  .cards{display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:14px; margin-top:16px}
+  .card{background:var(--surface); border:1px solid var(--line); border-radius:12px; padding:16px 16px 15px;
+    box-shadow:var(--shadow); border-top:3px solid var(--line)}
+  .card.f{border-top-color:var(--fatal)} .card.w{border-top-color:var(--warn)} .card.t{border-top-color:var(--tip)}
+  .card .lvl{font-family:var(--mono); font-size:10.5px; letter-spacing:.14em; text-transform:uppercase; font-weight:700}
+  .card.f .lvl{color:var(--fatal)} .card.w .lvl{color:var(--warn)} .card.t .lvl{color:var(--tip)}
+  .card h4{margin:8px 0 6px; font-size:15.5px; font-weight:700; line-height:1.3; text-wrap:balance}
+  .card p{margin:0; font-size:13.5px; color:var(--ink-2); line-height:1.5}
+  .card code{font-family:var(--mono); font-size:.92em; background:var(--surface-3); padding:1px 5px; border-radius:5px; color:var(--ink)}
+
+  /* ── BOM ────────────────────────────────────────────────── */
+  .bom{columns:2; column-gap:28px; margin-top:16px}
+  @media (max-width:640px){ .bom{columns:1} }
+  .bom .item{break-inside:avoid; display:flex; gap:10px; align-items:baseline; padding:9px 0; border-bottom:1px solid var(--line-2)}
+  .bom .qty{font-family:var(--mono); font-weight:700; color:var(--accent); flex:none; min-width:2.4em}
+  .bom .desc{font-size:14px; color:var(--ink-2)}
+  .bom .desc b{color:var(--ink); font-weight:600}
+
+  footer{margin-top:64px; padding-top:22px; border-top:1px solid var(--line); color:var(--ink-3); font-size:13px}
+  footer .disc{padding:12px 14px; background:var(--surface); border:1px solid var(--line);
+    border-left:3px solid var(--warn); border-radius:8px; margin-bottom:16px; color:var(--ink-2)}
+  a{color:var(--accent)}
+
+  @media print{
+    body{background:#fff}
+    .figframe,.tbl-wrap,.card,.pblock,.rules li,.legend,.verified{box-shadow:none}
+  }
+</style>
+
+<div class="wrap">
+
+  <header>
+    <span class="eyebrow">WontHound · Hardware Reference</span>
+    <h1>ESP32-S3 <span class="accent">multi-radio</span> wiring</h1>
+    <p class="lede">A solder-ready interconnect for a portable ESP32-S3 handheld: a CC1101 sub-GHz
+      transceiver and an nRF24L01+ (PA/LNA) sharing one SPI bus, an ATGM336H GPS on UART, and a
+      TP4056 LiPo charging path — all on a single S3 that already carries a built-in display.</p>
+    <div class="chips">
+      <span class="chip"><b>MCU</b> ESP32-S3-WROOM-1</span>
+      <span class="chip"><b>Sub-GHz</b> CC1101 · SPI</span>
+      <span class="chip"><b>2.4 GHz</b> nRF24L01+PA+LNA · SPI</span>
+      <span class="chip"><b>GNSS</b> ATGM336H · UART 9600</span>
+      <span class="chip"><b>Power</b> TP4056 + 1S LiPo</span>
+    </div>
+    <div class="verified">
+      <span class="k">Checked</span>
+      <p>Pins were cross-verified against ESP32-S3 silicon constraints (strapping / flash / octal-PSRAM /
+        native-USB), per-module voltage &amp; logic levels, and the TP4056 power path. The radio SPI bus was
+        deliberately moved <b>off</b> GPIO 9–14 — the S3's default LCD cluster — so it won't fight your built-in display.
+        Before soldering, still confirm <b>your specific board's</b> display/touch/SD pins (see gotcha ①).</p>
+    </div>
+  </header>
+
+  <!-- ── NET LEGEND ─────────────────────────────────────────── -->
+  <section>
+    <h2><span class="num">§1</span>Net legend</h2>
+    <p class="sub">Every wire below is colored by what it carries. Match the dot color to the connection type.</p>
+    <div class="legend">
+      <span style="color:var(--net-vplus)"><i class="dot" style="background:currentColor"></i>V+ / 5&nbsp;V</span>
+      <span style="color:var(--net-3v3)"><i class="dot" style="background:currentColor"></i>3.3&nbsp;V rail</span>
+      <span style="color:var(--net-gnd)"><i class="dot" style="background:currentColor"></i>GND (common)</span>
+      <span style="color:var(--net-spi)"><i class="dot" style="background:currentColor"></i>SPI &nbsp;SCK/MOSI/MISO/CS</span>
+      <span style="color:var(--net-uart)"><i class="dot" style="background:currentColor"></i>UART &nbsp;GPS</span>
+      <span style="color:var(--net-ctrl)"><i class="dot" style="background:currentColor"></i>Control GPIO &nbsp;GDO/CE/IRQ/PPS</span>
+      <span style="color:var(--net-adc)"><i class="dot" style="background:currentColor"></i>ADC1 &nbsp;battery sense</span>
+    </div>
+  </section>
+
+  <!-- ── SCHEMATIC ──────────────────────────────────────────── -->
+  <section>
+    <h2><span class="num">§2</span>Interconnect diagram</h2>
+    <p class="sub">Signal wiring only. Every radio pin sits clear of the S3's built-in-display bus. Power distribution is in §4.</p>
+    <div class="figframe">
+      <div class="cap"><b>Signal schematic</b><em>ESP32-S3 · shared SPI2 + UART1 + control GPIO</em></div>
+      <div class="scroll">
+        <svg viewBox="0 0 1160 780" role="img" aria-label="ESP32-S3 wiring schematic with CC1101, nRF24L01+, ATGM336H GPS and power block">
+          <defs>
+            <pattern id="mesh" width="26" height="26" patternUnits="userSpaceOnUse">
+              <path d="M26 0H0V26" fill="none" style="stroke:var(--grid)" stroke-width="1"/>
+            </pattern>
+            <style>
+              .cardbg{fill:var(--surface-2); stroke:var(--line); stroke-width:1.5}
+              .hdrbg{fill:var(--surface-3)}
+              .mcu{fill:var(--surface-3); stroke:var(--accent); stroke-width:2}
+              .mono{font-family:var(--mono)}
+              .sans{font-family:var(--sans)}
+              .lbl{font-family:var(--mono); font-size:14px; fill:var(--ink)}
+              .gp{font-family:var(--mono); font-size:14px; font-weight:700}
+              .role{font-family:var(--mono); font-size:11px; fill:var(--ink-3)}
+              .name{font-family:var(--sans); font-weight:800; fill:var(--ink)}
+              .ft{font-family:var(--mono); font-size:10.5px; fill:var(--ink-3)}
+              .port{font-family:var(--mono); font-size:11px; fill:var(--ink-2)}
+            </style>
+          </defs>
+
+          <rect x="0" y="0" width="1160" height="780" fill="url(#mesh)"/>
+
+          <!-- ribbons (drawn first, behind cards) -->
+          <g fill="none" stroke-linecap="round">
+            <path d="M320,175 C 400,175 380,320 452,320" style="stroke:var(--net-spi)" stroke-width="11" opacity=".30"/>
+            <path d="M320,600 C 400,600 380,470 452,470" style="stroke:var(--net-spi)" stroke-width="11" opacity=".30"/>
+            <path d="M840,168 C 762,168 782,320 708,320" style="stroke:var(--net-uart)" stroke-width="11" opacity=".32"/>
+            <path d="M840,600 C 762,600 782,470 708,470" style="stroke:var(--net-vplus)" stroke-width="11" opacity=".30"/>
+          </g>
+          <g class="port" text-anchor="middle">
+            <text x="386" y="300">shared SPI2</text>
+            <text x="386" y="452">+ CS / control</text>
+            <text x="775" y="300">UART1</text>
+            <text x="775" y="452">5V · 3V3</text>
+          </g>
+
+          <!-- ══ MCU ══ -->
+          <g>
+            <rect class="mcu" x="452" y="230" width="256" height="300" rx="16"/>
+            <text class="name" x="580" y="298" text-anchor="middle" font-size="26">ESP32-S3</text>
+            <text class="role" x="580" y="320" text-anchor="middle" font-size="12">WROOM-1 · built-in TFT</text>
+            <line x1="486" y1="342" x2="674" y2="342" style="stroke:var(--line)" stroke-width="1"/>
+            <text class="mono" x="580" y="372" text-anchor="middle" font-size="12" style="fill:var(--ink-2)">SPI2  GPIO 5 / 6 / 7</text>
+            <text class="mono" x="580" y="394" text-anchor="middle" font-size="12" style="fill:var(--ink-2)">UART1 GPIO 17 / 18</text>
+            <text class="mono" x="580" y="416" text-anchor="middle" font-size="12" style="fill:var(--ink-2)">ADC1  GPIO 4</text>
+            <rect x="486" y="444" width="188" height="64" rx="9" style="fill:var(--surface);stroke:var(--line)"/>
+            <text class="mono" x="580" y="468" text-anchor="middle" font-size="11" style="fill:var(--net-vplus)">POWER IN</text>
+            <text class="mono" x="580" y="486" text-anchor="middle" font-size="11" style="fill:var(--ink-3)">5V → VIN pin</text>
+            <text class="mono" x="580" y="500" text-anchor="middle" font-size="10" style="fill:var(--ink-3)">(from battery boost, §4)</text>
+          </g>
+
+          <!-- ══ CC1101 (top-left) ══ -->
+          <g>
+            <rect class="cardbg" x="70" y="60" width="250" height="238" rx="13"/>
+            <path class="hdrbg" d="M70 73 a13 13 0 0 1 13 -13 h224 a13 13 0 0 1 13 13 v33 h-250 z"/>
+            <text class="name" x="86" y="90" font-size="17">CC1101</text>
+            <text class="role" x="86" y="118" font-size="0">.</text>
+            <rect x="256" y="72" width="48" height="21" rx="6" fill="none" style="stroke:var(--net-3v3)"/>
+            <text class="mono" x="280" y="87" text-anchor="middle" font-size="11" style="fill:var(--net-3v3)">3V3</text>
+            <text class="role" x="86" y="112">Sub-GHz 300–928 MHz</text>
+            <!-- rows -->
+            <g class="lbl">
+              <circle cx="90" cy="138" r="5" style="fill:var(--net-spi)"/><text x="104" y="143">SCK</text><text class="gp" x="304" y="143" text-anchor="end" style="fill:var(--net-spi)">GPIO5</text>
+              <circle cx="90" cy="165" r="5" style="fill:var(--net-spi)"/><text x="104" y="170">MOSI</text><text class="gp" x="304" y="170" text-anchor="end" style="fill:var(--net-spi)">GPIO6</text>
+              <circle cx="90" cy="192" r="5" style="fill:var(--net-spi)"/><text x="104" y="197">MISO</text><text class="gp" x="304" y="197" text-anchor="end" style="fill:var(--net-spi)">GPIO7</text>
+              <circle cx="90" cy="219" r="5" style="fill:var(--net-spi)"/><text x="104" y="224">CSN</text><text x="150" y="224" font-size="10" style="fill:var(--warn)" class="mono">10k↑</text><text class="gp" x="304" y="224" text-anchor="end" style="fill:var(--net-spi)">GPIO2</text>
+              <circle cx="90" cy="246" r="5" style="fill:var(--net-ctrl)"/><text x="104" y="251">GDO0</text><text class="gp" x="304" y="251" text-anchor="end" style="fill:var(--net-ctrl)">GPIO8</text>
+            </g>
+            <line x1="82" y1="266" x2="308" y2="266" style="stroke:var(--line)" stroke-width="1"/>
+            <text class="ft" x="86" y="284">VCC 3V3 · 10µF+100nF · GDO2→GPIO1 opt</text>
+          </g>
+
+          <!-- ══ nRF24 (bottom-left) ══ -->
+          <g>
+            <rect class="cardbg" x="70" y="482" width="250" height="238" rx="13"/>
+            <path class="hdrbg" d="M70 495 a13 13 0 0 1 13 -13 h224 a13 13 0 0 1 13 13 v33 h-250 z"/>
+            <text class="name" x="86" y="512" font-size="17">nRF24L01+</text>
+            <rect x="256" y="494" width="48" height="21" rx="6" fill="none" style="stroke:var(--net-3v3)"/>
+            <text class="mono" x="280" y="509" text-anchor="middle" font-size="11" style="fill:var(--net-3v3)">3V3</text>
+            <text class="role" x="86" y="534">2.4 GHz · PA + LNA</text>
+            <g class="lbl">
+              <circle cx="90" cy="560" r="5" style="fill:var(--net-spi)"/><text x="104" y="565">SCK</text><text class="gp" x="304" y="565" text-anchor="end" style="fill:var(--net-spi)">GPIO5</text>
+              <circle cx="90" cy="587" r="5" style="fill:var(--net-spi)"/><text x="104" y="592">MOSI</text><text class="gp" x="304" y="592" text-anchor="end" style="fill:var(--net-spi)">GPIO6</text>
+              <circle cx="90" cy="614" r="5" style="fill:var(--net-spi)"/><text x="104" y="619">MISO</text><text class="gp" x="304" y="619" text-anchor="end" style="fill:var(--net-spi)">GPIO7</text>
+              <circle cx="90" cy="641" r="5" style="fill:var(--net-spi)"/><text x="104" y="646">CSN</text><text x="150" y="646" font-size="10" style="fill:var(--warn)" class="mono">10k↑</text><text class="gp" x="304" y="646" text-anchor="end" style="fill:var(--net-spi)">GPIO38</text>
+              <circle cx="90" cy="668" r="5" style="fill:var(--net-ctrl)"/><text x="104" y="673">CE</text><text class="gp" x="304" y="673" text-anchor="end" style="fill:var(--net-ctrl)">GPIO39</text>
+            </g>
+            <line x1="82" y1="688" x2="308" y2="688" style="stroke:var(--line)" stroke-width="1"/>
+            <text class="ft" x="86" y="706" style="fill:var(--net-vplus)">Own 3V3 LDO · 47µF+100nF AT header · IRQ→40 opt</text>
+          </g>
+
+          <!-- shared-bus bracket note -->
+          <g>
+            <path d="M40 138 q-14 0 -14 14 v452 q0 14 14 14" fill="none" style="stroke:var(--net-spi)" stroke-width="1.5" opacity=".7"/>
+            <text class="mono" x="20" y="368" font-size="11" style="fill:var(--net-spi)" transform="rotate(-90 20 368)" text-anchor="middle">SHARED SPI2 BUS — GPIO 5 / 6 / 7</text>
+          </g>
+
+          <!-- ══ GPS (top-right) ══ -->
+          <g>
+            <rect class="cardbg" x="840" y="60" width="250" height="216" rx="13"/>
+            <path class="hdrbg" d="M840 73 a13 13 0 0 1 13 -13 h224 a13 13 0 0 1 13 13 v33 h-250 z"/>
+            <text class="name" x="856" y="90" font-size="17">ATGM336H</text>
+            <rect x="1026" y="72" width="48" height="21" rx="6" fill="none" style="stroke:var(--net-3v3)"/>
+            <text class="mono" x="1050" y="87" text-anchor="middle" font-size="11" style="fill:var(--net-3v3)">3V3</text>
+            <text class="role" x="856" y="112">GPS / GNSS · 9600 8N1</text>
+            <g class="lbl">
+              <circle cx="860" cy="140" r="5" style="fill:var(--net-uart)"/><text x="874" y="145">TX</text><text class="gp" x="1074" y="145" text-anchor="end" style="fill:var(--net-uart)">GPIO18 (RX)</text>
+              <circle cx="860" cy="169" r="5" style="fill:var(--net-uart)"/><text x="874" y="174">RX</text><text class="gp" x="1074" y="174" text-anchor="end" style="fill:var(--net-uart)">GPIO17 (TX)</text>
+              <circle cx="860" cy="198" r="5" style="fill:var(--net-ctrl)"/><text x="874" y="203">PPS</text><text x="915" y="203" font-size="10" style="fill:var(--ink-3)" class="mono">opt</text><text class="gp" x="1074" y="203" text-anchor="end" style="fill:var(--net-ctrl)">GPIO21</text>
+            </g>
+            <line x1="852" y1="222" x2="1078" y2="222" style="stroke:var(--line)" stroke-width="1"/>
+            <text class="ft" x="856" y="240">VCC 3V3 (not 5V!) · 100nF · crossover TX↔RX</text>
+            <text class="ft" x="856" y="258">battery-backed RTC keeps hot-start almanac</text>
+          </g>
+
+          <!-- ══ Power block (bottom-right) ══ -->
+          <g>
+            <rect class="cardbg" x="840" y="470" width="250" height="250" rx="13"/>
+            <path class="hdrbg" d="M840 483 a13 13 0 0 1 13 -13 h224 a13 13 0 0 1 13 13 v33 h-250 z"/>
+            <text class="name" x="856" y="500" font-size="17">Power in</text>
+            <rect x="1010" y="482" width="64" height="21" rx="6" fill="none" style="stroke:var(--net-vplus)"/>
+            <text class="mono" x="1042" y="497" text-anchor="middle" font-size="11" style="fill:var(--net-vplus)">5V→VIN</text>
+            <text class="role" x="856" y="522">from TP4056 + boost (§4)</text>
+            <g class="lbl" font-size="13">
+              <circle cx="860" cy="548" r="5" style="fill:var(--net-vplus)"/><text x="874" y="553">5V rail → ESP VIN</text>
+              <circle cx="860" cy="575" r="5" style="fill:var(--net-3v3)"/><text x="874" y="580">3V3 rail → CC1101, GPS</text>
+              <circle cx="860" cy="602" r="5" style="fill:var(--net-3v3)"/><text x="874" y="607">3V3 (own LDO) → nRF24</text>
+              <circle cx="860" cy="629" r="5" style="fill:var(--net-adc)"/><text x="874" y="634">BAT ÷2 → </text><text class="gp" x="964" y="634" style="fill:var(--net-adc)">GPIO4</text>
+              <circle cx="860" cy="656" r="5" style="fill:var(--net-gnd)"/><text x="874" y="661">GND → common star</text>
+            </g>
+            <line x1="852" y1="678" x2="1078" y2="678" style="stroke:var(--line)" stroke-width="1"/>
+            <text class="ft" x="856" y="696" style="fill:var(--net-vplus)">board USB = flash-only · never live with boost</text>
+          </g>
+        </svg>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── PIN TABLE ──────────────────────────────────────────── -->
+  <section>
+    <h2><span class="num">§3</span>Pin map</h2>
+    <p class="sub">Wire straight from this table. GPIO numbers are the verified, conflict-checked assignment for a generic ESP32-S3-WROOM-1.</p>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>Signal</th><th>ESP32-S3</th><th>Module pad</th><th>Note</th></tr></thead>
+        <tbody>
+          <tr class="grouphdr"><td colspan="4">CC1101 — sub-GHz <span class="vbadge v-33">VCC = 3.3 V only</span></td></tr>
+          <tr><td><span class="sig"><i class="dot" style="background:var(--net-spi)"></i>SCK</span></td><td><span class="gpio" style="color:var(--net-spi)">GPIO5</span></td><td>SCK</td><td class="note">Shared radio bus</td></tr>
+          <tr><td><span class="sig"><i class="dot" style="background:var(--net-spi)"></i>MOSI</span></td><td><span class="gpio" style="color:var(--net-spi)">GPIO6</span></td><td>SI</td><td class="note">Shared radio bus</td></tr>
+          <tr><td><span class="sig"><i class="dot" style="background:var(--net-spi)"></i>MISO</span></td><td><span class="gpio" style="color:var(--net-spi)">GPIO7</span></td><td>SO</td><td class="note">Shared; tri-states when CS high</td></tr>
+          <tr><td><span class="sig"><i class="dot" style="background:var(--net-spi)"></i>CS</span><span class="tag pull">10k → 3V3</span></td><td><span class="gpio" style="color:var(--net-spi)">GPIO2</span></td><td>CSN</td><td class="note">Pull-up keeps it deselected during boot float</td></tr>
+          <tr><td><span class="sig"><i class="dot" style="background:var(--net-ctrl)"></i>GDO0</span></td><td><span class="gpio" style="color:var(--net-ctrl)">GPIO8</span></td><td>GDO0</td><td class="note">TX / packet interrupt line</td></tr>
+          <tr><td><span class="sig"><i class="dot" style="background:var(--net-ctrl)"></i>GDO2</span><span class="tag opt">optional</span></td><td><span class="gpio" style="color:var(--net-ctrl)">GPIO1</span></td><td>GDO2</td><td class="note">Second status line; omit if unused</td></tr>
+          <tr><td><span class="sig"><i class="dot" style="background:var(--net-3v3)"></i>VCC</span></td><td><span class="gpio v-33">3V3</span></td><td>VCC</td><td class="note"><b>3.3 V only</b> (abs max ≈3.9 V, not 5 V-tolerant) · 10µF + 100nF at header</td></tr>
+          <tr><td><span class="sig"><i class="dot" style="background:var(--net-gnd)"></i>GND</span></td><td><span class="gpio" style="color:var(--net-gnd)">GND</span></td><td>GND</td><td class="note">Common star ground</td></tr>
+
+          <tr class="grouphdr"><td colspan="4">nRF24L01+ (PA + LNA) — 2.4 GHz <span class="vbadge v-33">VCC = 3.3 V only</span></td></tr>
+          <tr><td><span class="sig"><i class="dot" style="background:var(--net-spi)"></i>SCK</span></td><td><span class="gpio" style="color:var(--net-spi)">GPIO5</span></td><td>SCK</td><td class="note">Shared radio bus</td></tr>
+          <tr><td><span class="sig"><i class="dot" style="background:var(--net-spi)"></i>MOSI</span></td><td><span class="gpio" style="color:var(--net-spi)">GPIO6</span></td><td>MOSI</td><td class="note">Shared radio bus</td></tr>
+          <tr><td><span class="sig"><i class="dot" style="background:var(--net-spi)"></i>MISO</span></td><td><span class="gpio" style="color:var(--net-spi)">GPIO7</span></td><td>MISO</td><td class="note">Shared; tri-states when CSN high</td></tr>
+          <tr><td><span class="sig"><i class="dot" style="background:var(--net-spi)"></i>CSN</span><span class="tag pull">10k → 3V3</span></td><td><span class="gpio" style="color:var(--net-spi)">GPIO38</span></td><td>CSN</td><td class="note">Pull-up for boot float window</td></tr>
+          <tr><td><span class="sig"><i class="dot" style="background:var(--net-ctrl)"></i>CE</span></td><td><span class="gpio" style="color:var(--net-ctrl)">GPIO39</span></td><td>CE</td><td class="note">RX/TX mode switch</td></tr>
+          <tr><td><span class="sig"><i class="dot" style="background:var(--net-ctrl)"></i>IRQ</span><span class="tag opt">optional</span></td><td><span class="gpio" style="color:var(--net-ctrl)">GPIO40</span></td><td>IRQ</td><td class="note">Enable internal pull-up; omit if polling</td></tr>
+          <tr><td><span class="sig"><i class="dot" style="background:var(--net-3v3)"></i>VCC</span></td><td><span class="gpio v-33">3V3*</span></td><td>VCC</td><td class="note"><b>Own 3.3 V LDO off the 5 V rail.</b> PA/LNA TX draws ~115 mA bursts — <b>47µF + 100nF right at the module</b> or it "scans but won't transmit" / resets</td></tr>
+          <tr><td><span class="sig"><i class="dot" style="background:var(--net-gnd)"></i>GND</span></td><td><span class="gpio" style="color:var(--net-gnd)">GND</span></td><td>GND</td><td class="note">Common star ground</td></tr>
+
+          <tr class="grouphdr"><td colspan="4">ATGM336H — GPS / GNSS <span class="vbadge v-33">power at 3.3 V</span></td></tr>
+          <tr><td><span class="sig"><i class="dot" style="background:var(--net-uart)"></i>TX</span></td><td><span class="gpio" style="color:var(--net-uart)">GPIO18</span> <span class="tag">ESP RX</span></td><td>TX</td><td class="note">GPS-TX → ESP-RX. NMEA out at 9600 8N1</td></tr>
+          <tr><td><span class="sig"><i class="dot" style="background:var(--net-uart)"></i>RX</span></td><td><span class="gpio" style="color:var(--net-uart)">GPIO17</span> <span class="tag">ESP TX</span></td><td>RX</td><td class="note">ESP-TX → GPS-RX. Only needed to send config (baud/rate)</td></tr>
+          <tr><td><span class="sig"><i class="dot" style="background:var(--net-ctrl)"></i>PPS</span><span class="tag opt">optional</span></td><td><span class="gpio" style="color:var(--net-ctrl)">GPIO21</span></td><td>PPS</td><td class="note">1 Hz time pulse; omit if unused</td></tr>
+          <tr><td><span class="sig"><i class="dot" style="background:var(--net-3v3)"></i>VCC</span></td><td><span class="gpio v-33">3V3</span></td><td>VCC</td><td class="note">Accepts 3.3–5 V, but <b>use 3.3 V</b> so its TX can't over-drive GPIO18 · 100nF</td></tr>
+          <tr><td><span class="sig"><i class="dot" style="background:var(--net-gnd)"></i>GND</span></td><td><span class="gpio" style="color:var(--net-gnd)">GND</span></td><td>GND</td><td class="note">Common star ground</td></tr>
+
+          <tr class="grouphdr"><td colspan="4">Battery telemetry <span class="vbadge v-5">optional</span></td></tr>
+          <tr><td><span class="sig"><i class="dot" style="background:var(--net-adc)"></i>V-sense</span></td><td><span class="gpio" style="color:var(--net-adc)">GPIO4</span> <span class="tag">ADC1_CH3</span></td><td>Divider tap</td><td class="note">100k/100k (or 220k/220k) from BAT+ to GND, mid-node to GPIO4 + 100nF. <b>Must be ADC1</b> — ADC2 dies with Wi-Fi on</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ── POWER TREE ─────────────────────────────────────────── -->
+  <section>
+    <h2><span class="num">§4</span>Power path</h2>
+    <p class="sub">Boost the cell to a stable 5 V so the board's onboard 3.3 V regulator stays above its dropout across the whole discharge curve — then feed the hungry nRF24 from its own regulator.</p>
+    <div class="flow">
+      <div class="pblock"><span class="rail rail-5">USB 5V</span><h4>Charge input</h4><p>5 V into TP4056 <code>IN+/IN−</code> only. This is the charger's port — not the board's.</p></div>
+      <div class="arrow">→</div>
+      <div class="pblock"><span class="rail rail-bat">TP4056</span><h4>Protected charger</h4><p>DW01A + FS8205A variant (has <code>OUT+/OUT−</code>). Set <code>Rprog</code> to ~0.5–1C of the cell.</p></div>
+      <div class="arrow">→</div>
+      <div class="pblock"><span class="rail rail-bat">1S LiPo</span><h4>Protected cell</h4><p>On <code>BAT+/BAT−</code>. 3.0–4.2 V. Use a cell with its own PCM.</p></div>
+      <div class="arrow">→</div>
+      <div class="pblock"><span class="rail rail-5">Boost 5V</span><h4>Step-up ≥1 A</h4><p>From <code>OUT+/OUT−</code> to a stable 5.0 V. Add 100–220µF bulk on the rail.</p></div>
+      <div class="arrow">→</div>
+      <div class="pblock"><span class="rail rail-5">ESP32-S3</span><h4>VIN / 5V pin</h4><p>Onboard AMS1117 makes the display's 3.3 V. nRF24 gets a <b>separate</b> 3.3 V LDO off this 5 V.</p></div>
+    </div>
+    <ul class="rules">
+      <li><span class="mk f">FATAL</span><span><b>One power entry at a time.</b> The board's own USB 5 V and the boost 5 V must never be live together — that back-feed / two-charger path is what smokes things. <b>Flash with the battery/boost disconnected.</b></span></li>
+      <li><span class="mk w">CARE</span><span><b>TP4056 is not a power-path charger.</b> Running the load while charging corrupts its charge-termination sensing. Charge with the device off, or swap in an <code>MCP73871</code> / <code>BQ24074</code> for true use-while-charging.</span></li>
+      <li><span class="mk w">CARE</span><span><b>Don't hang the nRF24 off the display's 3.3 V.</b> Its TX current spikes will sag the shared rail and glitch the LCD. Give it a dedicated LDO + local bulk cap.</span></li>
+    </ul>
+  </section>
+
+  <!-- ── GOTCHAS ────────────────────────────────────────────── -->
+  <section>
+    <h2><span class="num">§5</span>Before you solder</h2>
+    <p class="sub">The failures that actually happen on this exact build, ranked by how much they hurt.</p>
+    <div class="cards">
+      <div class="card f"><div class="lvl">① Fatal · do first</div><h4>Audit your display's pins</h4><p>Dump your board's panel init and record its <code>SCK/MOSI/MISO/CS/DC/RST/BL</code> + touch + SD GPIOs. Real S3-CYD boards put the TFT on <code>GPIO10–13</code> with backlight on 21/27/45. This map dodges that cluster — confirm <b>your</b> board doesn't also use 5/6/7/8/17/18/38/39/40.</p></div>
+      <div class="card f"><div class="lvl">② Fatal · silicon</div><h4>GPIO 22–25 don't exist on S3</h4><p>Those numbers are classic-ESP32 only. The WontHound repo's <code>GPIO23</code> radio comments are legacy from the ESP32 CYD — never assign them on an S3.</p></div>
+      <div class="card f"><div class="lvl">③ Fatal · voltage</div><h4>Never 5 V on the radios</h4><p>nRF24 abs-max ≈3.6 V, CC1101 ≈3.9 V, and neither has 5 V-tolerant IO. VCC <b>and</b> every logic pin stay at 3.3 V. 5 V = dead module.</p></div>
+      <div class="card w"><div class="lvl">④ Important</div><h4>nRF24 needs a stiff 3.3 V</h4><p>Dedicated LDO + <code>47µF</code> &amp; <code>100nF</code> right at the header. This is the #1 cause of the classic "transmits nothing / resets on TX" failure.</p></div>
+      <div class="card w"><div class="lvl">⑤ Important</div><h4>10k pull-ups on both CS lines</h4><p><code>GPIO2</code> (CC1101) and <code>GPIO38</code> (nRF24) each need a 10k → 3.3 V so neither radio drives MISO during the boot float window.</p></div>
+      <div class="card w"><div class="lvl">⑥ Important</div><h4>Battery sense stays on ADC1</h4><p><code>GPIO4 = ADC1_CH3</code>. ADC2 is unusable while Wi-Fi is on — never move the divider to a GPIO11–20 pin.</p></div>
+      <div class="card w"><div class="lvl">⑦ Important</div><h4>Power GPS at 3.3 V</h4><p>Then its UART TX can't over-drive <code>GPIO18</code>. Keep the crossover (GPS-TX→ESP-RX, ESP-TX→GPS-RX) and start at 9600 8N1.</p></div>
+      <div class="card w"><div class="lvl">⑧ Important</div><h4>Use the protected TP4056</h4><p>The one with <code>OUT+/OUT−</code> pads, plus a protected cell. A bare red TP4056 has no protection and will deep-discharge the LiPo.</p></div>
+      <div class="card t"><div class="lvl">⑨ Tip</div><h4>Size <code>Rprog</code> to the cell</h4><p>Default 1.2k ≈ 1 A cooks a small pack. <code>Iprog ≈ 1200 / Rprog</code> A — e.g. 2k–2.4k for a 500 mAh cell.</p></div>
+      <div class="card t"><div class="lvl">⑩ Tip</div><h4>Keep these pins clear</h4><p>Native-USB <code>GPIO19/20</code>, strapping <code>0/3/45/46</code>, flash <code>26–32</code>, octal-PSRAM <code>33–37</code>, UART0 console <code>43/44</code>, and the common RGB-LED <code>GPIO48</code>.</p></div>
+    </div>
+  </section>
+
+  <!-- ── BOM ────────────────────────────────────────────────── -->
+  <section>
+    <h2><span class="num">§6</span>Extra parts checklist</h2>
+    <p class="sub">Beyond the four modules and the board — the passives and power parts that make it actually work.</p>
+    <div class="bom">
+      <div class="item"><span class="qty">1×</span><span class="desc"><b>47 µF</b> electrolytic/tantalum + <b>100 nF</b> ceramic — at nRF24 header</span></div>
+      <div class="item"><span class="qty">1×</span><span class="desc"><b>10 µF</b> + <b>100 nF</b> — at CC1101 VCC</span></div>
+      <div class="item"><span class="qty">1×</span><span class="desc"><b>100 nF</b> — at GPS VCC</span></div>
+      <div class="item"><span class="qty">2×</span><span class="desc"><b>10 kΩ</b> — CS pull-ups (GPIO2, GPIO38)</span></div>
+      <div class="item"><span class="qty">2×</span><span class="desc"><b>100 kΩ</b> (or 220 kΩ) + <b>100 nF</b> — battery divider</span></div>
+      <div class="item"><span class="qty">1×</span><span class="desc"><b>Protected TP4056</b> module (OUT+/OUT− pads)</span></div>
+      <div class="item"><span class="qty">1×</span><span class="desc"><b>Protected 1S LiPo</b> — capacity to suit <code>Rprog</code></span></div>
+      <div class="item"><span class="qty">1×</span><span class="desc"><b>Boost converter</b> → 5.0 V, ≥1 A (e.g. MT3608-class, set output)</span></div>
+      <div class="item"><span class="qty">1×</span><span class="desc"><b>3.3 V LDO</b> for nRF24 (low-dropout, off the 5 V rail)</span></div>
+      <div class="item"><span class="qty">1×</span><span class="desc"><b>100–220 µF</b> bulk cap — on the 5 V boost rail</span></div>
+    </div>
+  </section>
+
+  <footer>
+    <div class="disc"><b>Reference, not gospel.</b> Board variants differ — always verify against your specific
+      ESP32-S3 board's own pinout and your modules' datasheets before powering up. Double-check every
+      3.3 V rail with a meter before the first connect, and bring the battery up last.</div>
+    Verified pin map for a generic ESP32-S3-WROOM-1 · radio SPI relocated off the built-in-display bus ·
+    aligns with the WontHound-CYD conventions (shared SPI radios, GPS on UART, TP4056 power).
+  </footer>
+
+</div>
